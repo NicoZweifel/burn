@@ -2,10 +2,10 @@
 mod tests {
     use super::*;
     use burn_jit::kernel::{mask_where, MaskWhereStrategy};
-    use burn_tensor::{backend::Backend, Bool, Distribution, Tensor};
+    use burn_tensor::{backend::Backend, Bool, Distribution, Tensor, TensorPrimitive};
 
     #[test]
-    fn mask_where_should_work_with_multiple_invocations() {
+    fn mask_where_should_match_reference_backend() {
         let (tensor, value, mask, tensor_ref, value_ref, mask_ref) = inputs_mask_where();
 
         let actual = tensor.mask_where(mask, value);
@@ -16,15 +16,15 @@ mod tests {
             .assert_approx_eq(&actual.into_data(), 3);
     }
     #[test]
-    fn mask_where_inplace_lhs_should_work_with_multiple_invocations() {
+    fn mask_where_inplace_lhs_should_match_reference_backend() {
         let (tensor, value, mask, tensor_ref, value_ref, mask_ref) = inputs_mask_where();
 
-        let actual = Tensor::<TestBackend, 3>::from_primitive(mask_where(
-            tensor.into_primitive(),
+        let actual = Tensor::<TestBackend, 3>::from_primitive(TensorPrimitive::Float(mask_where(
+            tensor.into_primitive().tensor(),
             mask.into_primitive(),
-            value.into_primitive(),
+            value.into_primitive().tensor(),
             MaskWhereStrategy::InplaceLhs,
-        ));
+        )));
         let expected = tensor_ref.mask_where(mask_ref, value_ref);
 
         expected
@@ -33,15 +33,15 @@ mod tests {
     }
 
     #[test]
-    fn mask_where_inplace_rhs_should_work_with_multiple_invocation() {
+    fn mask_where_inplace_rhs_should_match_reference_backend() {
         let (tensor, value, mask, tensor_ref, value_ref, mask_ref) = inputs_mask_where();
 
-        let actual = Tensor::<TestBackend, 3>::from_primitive(mask_where(
-            tensor.into_primitive(),
+        let actual = Tensor::<TestBackend, 3>::from_primitive(TensorPrimitive::Float(mask_where(
+            tensor.into_primitive().tensor(),
             mask.into_primitive(),
-            value.into_primitive(),
+            value.into_primitive().tensor(),
             MaskWhereStrategy::InplaceRhs,
-        ));
+        )));
         let expected = tensor_ref.mask_where(mask_ref, value_ref);
 
         expected

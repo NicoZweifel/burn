@@ -1,9 +1,12 @@
 use backend_comparison::persistence::save;
 use burn::tensor::{backend::Backend, Distribution, Shape, Tensor};
-use burn_common::benchmark::{run_benchmark, Benchmark};
+use burn_common::{
+    benchmark::{run_benchmark, Benchmark},
+    sync_type::SyncType,
+};
 
 pub struct BinaryBenchmark<B: Backend, const D: usize> {
-    shape: Shape<D>,
+    shape: Shape,
     device: B::Device,
 }
 
@@ -15,12 +18,15 @@ impl<B: Backend, const D: usize> Benchmark for BinaryBenchmark<B, D> {
     }
 
     fn shapes(&self) -> Vec<Vec<usize>> {
-        vec![self.shape.dims.into()]
+        vec![self.shape.dims.clone()]
     }
 
     fn execute(&self, (lhs, rhs): Self::Args) {
         // Choice of add is arbitrary
-        B::float_add(lhs.clone().into_primitive(), rhs.clone().into_primitive());
+        B::float_add(
+            lhs.clone().into_primitive().tensor(),
+            rhs.clone().into_primitive().tensor(),
+        );
     }
 
     fn prepare(&self) -> Self::Args {
@@ -31,7 +37,7 @@ impl<B: Backend, const D: usize> Benchmark for BinaryBenchmark<B, D> {
     }
 
     fn sync(&self) {
-        B::sync(&self.device)
+        B::sync(&self.device, SyncType::Wait);
     }
 }
 

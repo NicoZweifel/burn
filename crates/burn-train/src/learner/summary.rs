@@ -1,5 +1,8 @@
 use core::cmp::Ordering;
-use std::{fmt::Display, path::Path};
+use std::{
+    fmt::Display,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     logger::FileMetricLogger,
@@ -73,16 +76,20 @@ impl LearnerSummary {
     ///
     /// * `directory` - The directory containing the training artifacts (checkpoints and logs).
     /// * `metrics` - The list of metrics to collect for the summary.
-    pub fn new<S: AsRef<str>>(directory: &str, metrics: &[S]) -> Result<Self, String> {
-        let directory_path = Path::new(directory);
-        if !directory_path.exists() {
-            return Err(format!("Artifact directory does not exist at: {directory}"));
+    pub fn new<S: AsRef<str>>(directory: impl AsRef<Path>, metrics: &[S]) -> Result<Self, String> {
+        let directory = directory.as_ref();
+        if !directory.exists() {
+            return Err(format!(
+                "Artifact directory does not exist at: {}",
+                directory.display()
+            ));
         }
-        let train_dir = directory_path.join("train");
-        let valid_dir = directory_path.join("valid");
+        let train_dir = directory.join("train");
+        let valid_dir = directory.join("valid");
         if !train_dir.exists() & !valid_dir.exists() {
             return Err(format!(
-                "No training or validation artifacts found at: {directory}"
+                "No training or validation artifacts found at: {}",
+                directory.display()
             ));
         }
 
@@ -151,7 +158,7 @@ impl Display for LearnerSummary {
         )?;
 
         if let Some(model) = &self.model {
-            writeln!(f, "Model: {model}")?;
+            writeln!(f, "Model:\n{model}")?;
         }
         writeln!(f, "Total Epochs: {epochs}\n\n", epochs = self.epochs)?;
 
@@ -174,42 +181,50 @@ impl Display for LearnerSummary {
             }
         }
 
-        let mut write_metrics_summary = |metrics: &[MetricSummary],
-                                         split: &str|
-         -> std::fmt::Result {
-            for metric in metrics.iter() {
-                if metric.entries.is_empty() {
-                    continue; // skip metrics with no recorded values
+        fn fmt_val(val: f64) -> String {
+            if val < 1e-2 {
+                // Use scientific notation for small values which would otherwise be truncated
+                format!("{:<9.3e}", val)
+            } else {
+                format!("{:<9.3}", val)
+            }
+        }
+
+        let mut write_metrics_summary =
+            |metrics: &[MetricSummary], split: &str| -> std::fmt::Result {
+                for metric in metrics.iter() {
+                    if metric.entries.is_empty() {
+                        continue; // skip metrics with no recorded values
+                    }
+
+                    // Compute the min & max for each metric
+                    let metric_min = metric
+                        .entries
+                        .iter()
+                        .min_by(|a, b| cmp_f64(&a.value, &b.value))
+                        .unwrap();
+                    let metric_max = metric
+                        .entries
+                        .iter()
+                        .max_by(|a, b| cmp_f64(&a.value, &b.value))
+                        .unwrap();
+
+                    writeln!(
+                        f,
+                        "| {:<width_split$} | {:<width_metric$} | {}| {:<9?}| {}| {:<9?}|",
+                        split,
+                        metric.name,
+                        fmt_val(metric_min.value),
+                        metric_min.step,
+                        fmt_val(metric_max.value),
+                        metric_max.step,
+                        width_split = max_split_len,
+                        width_metric = max_metric_len,
+                    )?;
                 }
 
-                // Compute the min & max for each metric
-                let metric_min = metric
-                    .entries
-                    .iter()
-                    .min_by(|a, b| cmp_f64(&a.value, &b.value))
-                    .unwrap();
-                let metric_max = metric
-                    .entries
-                    .iter()
-                    .max_by(|a, b| cmp_f64(&a.value, &b.value))
-                    .unwrap();
-
-                writeln!(
-                    f,
-                    "| {:<width_split$} | {:<width_metric$} | {:<9.3?}| {:<9?}| {:<9.3?}| {:<9.3?}|",
-                    split,
-                    metric.name,
-                    metric_min.value,
-                    metric_min.step,
-                    metric_max.value,
-                    metric_max.step,
-                    width_split = max_split_len,
-                    width_metric = max_metric_len,
-                )?;
-            }
-
-            Ok(())
-        };
+                Ok(())
+            };
 
         write_metrics_summary(&self.metrics.train, split_train)?;
         write_metrics_summary(&self.metrics.valid, split_valid)?;
@@ -219,7 +234,7 @@ impl Display for LearnerSummary {
 }
 
 pub(crate) struct LearnerSummaryConfig {
-    pub(crate) directory: String,
+    pub(crate) directory: PathBuf,
     pub(crate) metrics: Vec<String>,
 }
 

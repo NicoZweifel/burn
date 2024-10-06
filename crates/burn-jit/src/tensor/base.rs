@@ -1,33 +1,43 @@
-use crate::codegen::dialect::gpu::{Elem, Operator, Scope, UnaryOperator};
 use crate::element::JitElement;
-use crate::{unary, Runtime};
-use burn_compute::client::ComputeClient;
-use burn_compute::server::Handle;
+use crate::kernel::{launch_unary, unary_op, UnaryOp};
+use crate::JitRuntime;
 use burn_tensor::Shape;
+use cubecl::client::ComputeClient;
+use cubecl::frontend::Numeric;
+use cubecl::linalg::tensor::TensorHandle;
+use cubecl::prelude::{TensorHandleRef, *};
+use cubecl::server::Handle;
 use std::marker::PhantomData;
 
 /// The basic tensor primitive struct.
-pub struct JitTensor<R, E, const D: usize>
+#[derive(new)]
+pub struct JitTensor<R, E>
 where
-    R: Runtime,
+    R: JitRuntime,
     E: JitElement,
 {
-    /// Compute client for the [runtime](Runtime).
+    /// Compute client for the [runtime](JitRuntime).
     pub client: ComputeClient<R::Server, R::Channel>,
     /// The buffer where the data are stored.
     pub handle: Handle<R::Server>,
     /// The shape of the tensor.
-    pub shape: Shape<D>,
+    pub shape: Shape,
     /// The device of the tensor.
     pub device: R::Device,
     /// The strides of the tensor.
-    pub strides: [usize; D],
+    pub strides: Vec<usize>,
     pub(crate) elem: PhantomData<E>,
 }
 
-impl<R, E, const D: usize> core::fmt::Debug for JitTensor<R, E, D>
+impl<R: JitRuntime, E: JitElement> From<JitTensor<R, E>> for TensorHandle<R, E> {
+    fn from(val: JitTensor<R, E>) -> Self {
+        TensorHandle::new(val.shape.dims.to_vec(), val.strides.to_vec(), val.handle)
+    }
+}
+
+impl<R, E> core::fmt::Debug for JitTensor<R, E>
 where
-    R: Runtime,
+    R: JitRuntime,
     E: JitElement,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,9 +52,9 @@ where
     }
 }
 
-impl<R, E, const D: usize> Clone for JitTensor<R, E, D>
+impl<R, E> Clone for JitTensor<R, E>
 where
-    R: Runtime,
+    R: JitRuntime,
     E: JitElement,
 {
     fn clone(&self) -> Self {
@@ -53,25 +63,26 @@ where
             handle: self.handle.clone(),
             shape: self.shape.clone(),
             device: self.device.clone(),
-            strides: self.strides,
+            strides: self.strides.clone(),
             elem: PhantomData,
         }
     }
 }
 
-impl<R, E, const D: usize> JitTensor<R, E, D>
+impl<R, E> JitTensor<R, E>
 where
-    R: Runtime,
+    R: JitRuntime,
     E: JitElement,
 {
     /// Create a new tensor with a contiguous memory layout.
-    pub fn new(
+    pub fn new_contiguous(
         client: ComputeClient<R::Server, R::Channel>,
         device: R::Device,
-        shape: Shape<D>,
+        shape: Shape,
         handle: Handle<R::Server>,
     ) -> Self {
-        let mut strides = [0; D];
+        let ndims = shape.num_dims();
+        let mut strides = vec![0; ndims];
 
         let mut current = 1;
         shape
@@ -100,20 +111,37 @@ where
         client: ComputeClient<R::Server, R::Channel>,
         device: R::Device,
     ) -> Self {
-        let bytes = self
-            .client
-            .read(&self.handle)
-            .read_sync()
-            .expect("Can only change client synchronously");
+        let bytes = burn_common::reader::try_read_sync(
+            self.client.read_async(self.handle.clone().binding()),
+        )
+        .expect("Can only change client synchronously");
         let handle = client.create(&bytes);
 
         Self {
             client,
             handle,
             shape: self.shape.clone(),
-            strides: self.strides,
+            strides: self.strides.clone(),
             device,
             elem: PhantomData,
+        }
+    }
+
+    /// Return the reference to a tensor handle.
+    pub fn as_handle_ref(&self) -> TensorHandleRef<'_, R> {
+        TensorHandleRef {
+            handle: &self.handle,
+            strides: &self.strides,
+            shape: &self.shape.dims,
+        }
+    }
+
+    /// Return the reference to a tensor argument.
+    pub fn as_tensor_arg<'a>(&'a self, vectorisation: u8) -> TensorArg<'a, R> {
+        let handle: TensorHandleRef<'a, R> = self.as_handle_ref();
+
+        unsafe {
+            TensorArg::from_raw_parts(handle.handle, handle.strides, handle.shape, vectorisation)
         }
     }
 
@@ -121,8 +149,9 @@ where
         if !self.handle.can_mut() {
             return false;
         }
+        let ndims = self.shape.num_dims();
 
-        for i in 0..D {
+        for i in 0..ndims {
             let shape_lhs = self.shape.dims[i];
             let shape_rhs = rhs.shape.dims[i];
 
@@ -137,22 +166,13 @@ where
 
     /// Copy the current tensor.
     pub fn copy(&self) -> Self {
-        // Seems like using the copy buffer from the `wgpu` API leads to race condition when they
-        // are used inplace afterward.
-        //
-        // To avoid them we need to execute the whole pipeline, which leads to significant
-        // slowdowns.
-        //
-        // The solution is just to use a simple unary compute shader.
-        unary!(
-            operation: |scope: &mut Scope, elem: Elem| Operator::Assign(UnaryOperator {
-                input: scope.read_array(0, elem),
-                out: scope.create_local(elem),
-            }),
-            runtime: R,
-            input: self.clone(),
-            elem: E
-        )
+        unary_op!(numeric(self.clone()) => |context, tensor| {
+            #[cube]
+            fn execute<C: Numeric>(input: Line<C>) -> Line<C> {
+                input
+            }
+            execute::expand::<C>(context, tensor)
+        })
     }
 
     /// Check if the tensor is safe to mutate.
@@ -172,27 +192,66 @@ where
 
     /// Check if the current tensor is contiguous.
     pub fn is_contiguous(&self) -> bool {
-        let mut current_stride = 0;
-        for d in 0..D {
-            let stride = self.strides[D - 1 - d];
+        is_contiguous(&self.shape.dims, &self.strides)
+    }
+}
 
-            if stride <= current_stride {
+pub(crate) fn is_contiguous(shape: &[usize], strides: &[usize]) -> bool {
+    if shape.is_empty() {
+        return true;
+    }
+
+    if shape.len() == 1 {
+        return strides[0] == 1;
+    }
+
+    let mut prev_stride = 1;
+    let mut current_num_elems_shape = 1;
+
+    for (i, (stride, shape)) in strides.iter().zip(shape).rev().enumerate() {
+        if i > 0 {
+            if current_num_elems_shape != *stride {
                 return false;
             }
 
-            current_stride = stride;
-        }
-
-        true
-    }
-
-    pub(crate) fn batch_swapped_with_row_col(&self) -> bool {
-        for d in 0..D - 2 {
-            let stride = self.strides[d];
-            if stride < self.strides[D - 2] || stride < self.strides[D - 1] {
-                return true;
+            if prev_stride >= *stride {
+                return false;
             }
         }
-        false
+
+        current_num_elems_shape *= shape;
+        prev_stride = *stride;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tensor::base::is_contiguous;
+
+    #[test]
+    fn is_contiguous_basic() {
+        assert!(is_contiguous(&[32, 32], &[32, 1]));
+    }
+
+    #[test]
+    fn is_contiguous_permuted() {
+        assert!(!is_contiguous(&[32, 32], &[1, 32]));
+    }
+
+    #[test]
+    fn is_contiguous_slice() {
+        assert!(!is_contiguous(&[32, 1, 64], &[32, 64, 1]));
+    }
+
+    #[test]
+    fn is_contiguous_4d_positive() {
+        assert!(is_contiguous(&[8, 256, 32, 32], &[262144, 1024, 32, 1]));
+    }
+
+    #[test]
+    fn is_contiguous_4d_negative() {
+        assert!(!is_contiguous(&[256, 8, 32, 32], &[1024, 262144, 32, 1]));
     }
 }

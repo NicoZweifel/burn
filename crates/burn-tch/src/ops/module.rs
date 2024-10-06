@@ -1,22 +1,22 @@
-use crate::{element::TchElement, LibTorch, TchTensor};
+use crate::{element::TchElement, LibTorch, QuantElement, TchTensor};
 use burn_tensor::ops::{
-    ConvOptions, ConvTransposeOptions, InterpolateMode, InterpolateOptions, MaxPool1dWithIndices,
-    MaxPool2dBackward, MaxPool2dWithIndices, ModuleOps,
+    ConvOptions, ConvTransposeOptions, DeformConv2dBackward, DeformConvOptions, InterpolateMode,
+    InterpolateOptions, MaxPool1dWithIndices, MaxPool2dBackward, MaxPool2dWithIndices, ModuleOps,
 };
 
-impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
-    fn embedding(weights: TchTensor<E, 2>, indices: TchTensor<i64, 2>) -> TchTensor<E, 3> {
+impl<E: TchElement, Q: QuantElement> ModuleOps<Self> for LibTorch<E, Q> {
+    fn embedding(weights: TchTensor<E>, indices: TchTensor<i64>) -> TchTensor<E> {
         let tensor = tch::Tensor::embedding(&weights.tensor, &indices.tensor, -1, false, false);
 
         TchTensor::new(tensor)
     }
 
     fn embedding_backward(
-        weights: TchTensor<E, 2>,
-        output: TchTensor<E, 3>,
-        indices: TchTensor<i64, 2>,
-    ) -> TchTensor<E, 2> {
-        let [n_embedding, _d_model] = weights.shape().dims;
+        weights: TchTensor<E>,
+        output: TchTensor<E>,
+        indices: TchTensor<i64>,
+    ) -> TchTensor<E> {
+        let [n_embedding, _d_model] = weights.shape().dims();
         let tensor = tch::Tensor::embedding_backward(
             &output.tensor,
             &indices.tensor,
@@ -30,11 +30,11 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn conv1d(
-        x: TchTensor<E, 3>,
-        weight: TchTensor<E, 3>,
-        bias: Option<TchTensor<E, 1>>,
+        x: TchTensor<E>,
+        weight: TchTensor<E>,
+        bias: Option<TchTensor<E>>,
         options: ConvOptions<1>,
-    ) -> TchTensor<E, 3> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::conv1d(
             &x.tensor,
             &weight.tensor,
@@ -49,11 +49,11 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn conv2d(
-        x: TchTensor<E, 4>,
-        weight: TchTensor<E, 4>,
-        bias: Option<TchTensor<E, 1>>,
+        x: TchTensor<E>,
+        weight: TchTensor<E>,
+        bias: Option<TchTensor<E>>,
         options: ConvOptions<2>,
-    ) -> TchTensor<E, 4> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::conv2d(
             &x.tensor,
             &weight.tensor,
@@ -67,32 +67,54 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
         TchTensor::new(tensor)
     }
 
-    fn conv_transpose2d(
-        x: TchTensor<E, 4>,
-        weight: TchTensor<E, 4>,
-        bias: Option<TchTensor<E, 1>>,
-        options: ConvTransposeOptions<2>,
-    ) -> TchTensor<E, 4> {
-        let tensor = tch::Tensor::conv_transpose2d(
+    fn conv3d(
+        x: TchTensor<E>,
+        weight: TchTensor<E>,
+        bias: Option<TchTensor<E>>,
+        options: ConvOptions<3>,
+    ) -> TchTensor<E> {
+        let tensor = tch::Tensor::conv3d(
             &x.tensor,
             &weight.tensor,
             bias.map(|t| t.tensor),
             options.stride.map(|i| i as i64),
             options.padding.map(|i| i as i64),
-            options.padding_out.map(|i| i as i64),
-            options.groups as i64,
             options.dilation.map(|i| i as i64),
+            options.groups as i64,
         );
 
         TchTensor::new(tensor)
     }
 
+    fn deform_conv2d(
+        _x: TchTensor<E>,
+        _offset: TchTensor<E>,
+        _weight: TchTensor<E>,
+        _mask: Option<TchTensor<E>>,
+        _bias: Option<TchTensor<E>>,
+        _options: DeformConvOptions<2>,
+    ) -> TchTensor<E> {
+        unimplemented!("Torch bindings don't support deform_conv2d");
+    }
+
+    fn deform_conv2d_backward(
+        _x: TchTensor<E>,
+        _offset: TchTensor<E>,
+        _weight: TchTensor<E>,
+        _mask: Option<TchTensor<E>>,
+        _bias: Option<TchTensor<E>>,
+        _out_grad: TchTensor<E>,
+        _options: DeformConvOptions<2>,
+    ) -> DeformConv2dBackward<Self> {
+        unimplemented!("Torch bindings don't support deform_conv2d");
+    }
+
     fn conv_transpose1d(
-        x: TchTensor<E, 3>,
-        weight: TchTensor<E, 3>,
-        bias: Option<TchTensor<E, 1>>,
+        x: TchTensor<E>,
+        weight: TchTensor<E>,
+        bias: Option<TchTensor<E>>,
         options: ConvTransposeOptions<1>,
-    ) -> TchTensor<E, 3> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::conv_transpose1d(
             &x.tensor,
             &weight.tensor,
@@ -107,13 +129,53 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
         TchTensor::new(tensor)
     }
 
+    fn conv_transpose2d(
+        x: TchTensor<E>,
+        weight: TchTensor<E>,
+        bias: Option<TchTensor<E>>,
+        options: ConvTransposeOptions<2>,
+    ) -> TchTensor<E> {
+        let tensor = tch::Tensor::conv_transpose2d(
+            &x.tensor,
+            &weight.tensor,
+            bias.map(|t| t.tensor),
+            options.stride.map(|i| i as i64),
+            options.padding.map(|i| i as i64),
+            options.padding_out.map(|i| i as i64),
+            options.groups as i64,
+            options.dilation.map(|i| i as i64),
+        );
+
+        TchTensor::new(tensor)
+    }
+
+    fn conv_transpose3d(
+        x: TchTensor<E>,
+        weight: TchTensor<E>,
+        bias: Option<TchTensor<E>>,
+        options: ConvTransposeOptions<3>,
+    ) -> TchTensor<E> {
+        let tensor = tch::Tensor::conv_transpose3d(
+            &x.tensor,
+            &weight.tensor,
+            bias.map(|t| t.tensor),
+            options.stride.map(|i| i as i64),
+            options.padding.map(|i| i as i64),
+            options.padding_out.map(|i| i as i64),
+            options.groups as i64,
+            options.dilation.map(|i| i as i64),
+        );
+
+        TchTensor::new(tensor)
+    }
+
     fn avg_pool1d(
-        x: TchTensor<E, 3>,
+        x: TchTensor<E>,
         kernel_size: usize,
         stride: usize,
         padding: usize,
         count_include_pad: bool,
-    ) -> TchTensor<E, 3> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::avg_pool1d(
             &x.tensor,
             [kernel_size as i64],
@@ -126,12 +188,12 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
         TchTensor::new(tensor)
     }
     fn avg_pool2d(
-        x: TchTensor<E, 4>,
+        x: TchTensor<E>,
         kernel_size: [usize; 2],
         stride: [usize; 2],
         padding: [usize; 2],
         count_include_pad: bool,
-    ) -> TchTensor<E, 4> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::avg_pool2d(
             &x.tensor,
             [kernel_size[0] as i64, kernel_size[1] as i64],
@@ -146,13 +208,13 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn avg_pool2d_backward(
-        x: TchTensor<E, 4>,
-        grad: TchTensor<E, 4>,
+        x: TchTensor<E>,
+        grad: TchTensor<E>,
         kernel_size: [usize; 2],
         stride: [usize; 2],
         padding: [usize; 2],
         count_include_pad: bool,
-    ) -> TchTensor<E, 4> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::avg_pool2d_backward(
             &x.tensor,
             &grad.tensor,
@@ -168,12 +230,12 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn max_pool1d(
-        x: TchTensor<E, 3>,
+        x: TchTensor<E>,
         kernel_size: usize,
         stride: usize,
         padding: usize,
         dilation: usize,
-    ) -> TchTensor<E, 3> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::max_pool1d(
             &x.tensor,
             kernel_size as i64,
@@ -187,12 +249,12 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn max_pool1d_with_indices(
-        x: TchTensor<E, 3>,
+        x: TchTensor<E>,
         kernel_size: usize,
         stride: usize,
         padding: usize,
         dilation: usize,
-    ) -> MaxPool1dWithIndices<LibTorch<E>> {
+    ) -> MaxPool1dWithIndices<LibTorch<E, Q>> {
         let (tensor, indices) = tch::Tensor::max_pool1d_with_indices(
             &x.tensor,
             kernel_size as i64,
@@ -206,12 +268,12 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn max_pool2d(
-        x: TchTensor<E, 4>,
+        x: TchTensor<E>,
         kernel_size: [usize; 2],
         stride: [usize; 2],
         padding: [usize; 2],
         dilation: [usize; 2],
-    ) -> TchTensor<E, 4> {
+    ) -> TchTensor<E> {
         let tensor = tch::Tensor::max_pool2d(
             &x.tensor,
             [kernel_size[0] as i64, kernel_size[1] as i64],
@@ -225,12 +287,12 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn max_pool2d_with_indices(
-        x: TchTensor<E, 4>,
+        x: TchTensor<E>,
         kernel_size: [usize; 2],
         stride: [usize; 2],
         padding: [usize; 2],
         dilation: [usize; 2],
-    ) -> MaxPool2dWithIndices<LibTorch<E>> {
+    ) -> MaxPool2dWithIndices<LibTorch<E, Q>> {
         let (tensor, indices) = tch::Tensor::max_pool2d_with_indices(
             &x.tensor,
             [kernel_size[0] as i64, kernel_size[1] as i64],
@@ -244,14 +306,14 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn max_pool2d_with_indices_backward(
-        x: TchTensor<E, 4>,
+        x: TchTensor<E>,
         kernel_size: [usize; 2],
         stride: [usize; 2],
         padding: [usize; 2],
         dilation: [usize; 2],
-        output_grad: TchTensor<E, 4>,
-        indices: TchTensor<i64, 4>,
-    ) -> MaxPool2dBackward<LibTorch<E>> {
+        output_grad: TchTensor<E>,
+        indices: TchTensor<i64>,
+    ) -> MaxPool2dBackward<LibTorch<E, Q>> {
         let grad = tch::Tensor::max_pool2d_with_indices_backward(
             &x.tensor,
             &output_grad.tensor,
@@ -266,29 +328,29 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
         MaxPool2dBackward::new(TchTensor::new(grad))
     }
 
-    fn adaptive_avg_pool2d(x: TchTensor<E, 4>, output_size: [usize; 2]) -> TchTensor<E, 4> {
+    fn adaptive_avg_pool2d(x: TchTensor<E>, output_size: [usize; 2]) -> TchTensor<E> {
         let tensor = tch::Tensor::adaptive_avg_pool2d(&x.tensor, output_size.map(|e| e as i64));
 
         TchTensor::new(tensor)
     }
 
-    fn adaptive_avg_pool2d_backward(x: TchTensor<E, 4>, grad: TchTensor<E, 4>) -> TchTensor<E, 4> {
+    fn adaptive_avg_pool2d_backward(x: TchTensor<E>, grad: TchTensor<E>) -> TchTensor<E> {
         let tensor = tch::Tensor::internal_adaptive_avg_pool2d_backward(&x.tensor, &grad.tensor);
 
         TchTensor::new(tensor)
     }
 
-    fn adaptive_avg_pool1d(x: TchTensor<E, 3>, output_size: usize) -> TchTensor<E, 3> {
+    fn adaptive_avg_pool1d(x: TchTensor<E>, output_size: usize) -> TchTensor<E> {
         let tensor = tch::Tensor::adaptive_avg_pool1d(&x.tensor, output_size as i64);
 
         TchTensor::new(tensor)
     }
 
     fn interpolate(
-        x: TchTensor<E, 4>,
+        x: TchTensor<E>,
         output_size: [usize; 2],
         options: InterpolateOptions,
-    ) -> TchTensor<E, 4> {
+    ) -> TchTensor<E> {
         let output_size = output_size.map(|e| e as i64);
 
         let tensor = match options.mode {
@@ -307,13 +369,13 @@ impl<E: TchElement> ModuleOps<Self> for LibTorch<E> {
     }
 
     fn interpolate_backward(
-        x: TchTensor<E, 4>,
-        grad: TchTensor<E, 4>,
+        x: TchTensor<E>,
+        grad: TchTensor<E>,
         output_size: [usize; 2],
         options: InterpolateOptions,
-    ) -> TchTensor<E, 4> {
+    ) -> TchTensor<E> {
         let output_size = output_size.map(|e| e as i64);
-        let [n, c, h_in, w_in] = x.shape().dims;
+        let [n, c, h_in, w_in] = x.shape().dims();
         let input_size = [n as i64, c as i64, h_in as i64, w_in as i64];
 
         let tensor = match options.mode {

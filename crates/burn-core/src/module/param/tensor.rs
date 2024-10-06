@@ -1,11 +1,14 @@
 use super::{Param, ParamId, Parameter};
-use crate::module::{AutodiffModule, Module, ModuleMapper, ModuleVisitor};
+use crate::module::{
+    AutodiffModule, Content, Module, ModuleDisplay, ModuleDisplayDefault, ModuleMapper,
+    ModuleVisitor,
+};
 use crate::tensor::{
     backend::{AutodiffBackend, Backend},
     Tensor,
 };
-use alloc::vec::Vec;
-use burn_tensor::{Bool, Data, Float, Int};
+use alloc::{format, string::ToString, vec::Vec};
+use burn_tensor::{Bool, Float, Int, TensorData};
 
 impl<B: Backend, const D: usize> Parameter for Tensor<B, D, Float> {
     type Device = B::Device;
@@ -72,7 +75,7 @@ impl<B: Backend, const D: usize> Param<Tensor<B, D>> {
     /// Create a new parameter from data.
     pub fn from_data<T>(data: T, device: &B::Device) -> Self
     where
-        T: Into<Data<B::FloatElem, D>>,
+        T: Into<TensorData>,
     {
         // When creating a parameter from a float tensor, we automatically mark it as requiring
         // gradients, so that it can be updated by an optimizer.
@@ -85,13 +88,12 @@ impl<const D: usize, B: Backend> Module<B> for Param<Tensor<B, D>> {
     type Record = Param<Tensor<B, D>>;
 
     fn visit<V: ModuleVisitor<B>>(&self, visitor: &mut V) {
-        visitor.visit_float(&self.id, &self.val())
+        visitor.visit_float(self.id, &self.val())
     }
 
     fn map<M: ModuleMapper<B>>(self, mapper: &mut M) -> Self {
         let (id, tensor) = self.consume();
-        let value = mapper.map_float(&id, tensor);
-
+        let value = mapper.map_float(id, tensor);
         Self::initialized(id, value)
     }
 
@@ -147,15 +149,31 @@ impl<const D: usize, B: Backend> Module<B> for Param<Tensor<B, D>> {
     }
 }
 
+impl<const D: usize, B: Backend> ModuleDisplayDefault for Param<Tensor<B, D>> {
+    fn content(&self, content: Content) -> Option<Content> {
+        let id = if content.display_settings.show_param_id() {
+            format!(", id: {}", self.id)
+        } else {
+            "".to_string()
+        };
+        let string = format!(
+            "ParamTensor {{rank: {D}, shape: {:?}, kind: float{id}}}",
+            self.shape().dims
+        );
+        content.add_formatted(&string).optional()
+    }
+}
+impl<const D: usize, B: Backend> ModuleDisplay for Param<Tensor<B, D>> {}
+
 impl<const D: usize, B: Backend> Module<B> for Param<Tensor<B, D, Int>> {
     type Record = Param<Tensor<B, D, Int>>;
 
     fn visit<V: ModuleVisitor<B>>(&self, visitor: &mut V) {
-        visitor.visit_int(&self.id, &self.val())
+        visitor.visit_int(self.id, &self.val())
     }
 
     fn map<M: ModuleMapper<B>>(self, mapper: &mut M) -> Self {
-        let value = mapper.map_int(&self.id, self.val());
+        let value = mapper.map_int(self.id, self.val());
         Self::initialized(self.id, value)
     }
 
@@ -197,16 +215,32 @@ impl<const D: usize, B: Backend> Module<B> for Param<Tensor<B, D, Int>> {
         devices
     }
 }
+
+impl<const D: usize, B: Backend> ModuleDisplayDefault for Param<Tensor<B, D, Int>> {
+    fn content(&self, content: Content) -> Option<Content> {
+        let id = if content.display_settings.show_param_id() {
+            format!(", id: {}", self.id)
+        } else {
+            "".to_string()
+        };
+        let string = format!(
+            "ParamTensor {{rank: {D}, shape: {:?}, kind: int{id}}}",
+            self.shape().dims
+        );
+        content.add_formatted(&string).optional()
+    }
+}
+impl<const D: usize, B: Backend> ModuleDisplay for Param<Tensor<B, D, Int>> {}
 
 impl<const D: usize, B: Backend> Module<B> for Param<Tensor<B, D, Bool>> {
     type Record = Param<Tensor<B, D, Bool>>;
 
     fn visit<V: ModuleVisitor<B>>(&self, visitor: &mut V) {
-        visitor.visit_bool(&self.id, &self.val())
+        visitor.visit_bool(self.id, &self.val())
     }
 
     fn map<M: ModuleMapper<B>>(self, mapper: &mut M) -> Self {
-        let value = mapper.map_bool(&self.id, self.val());
+        let value = mapper.map_bool(self.id, self.val());
         Self::initialized(self.id, value)
     }
 
@@ -249,11 +283,29 @@ impl<const D: usize, B: Backend> Module<B> for Param<Tensor<B, D, Bool>> {
     }
 }
 
+impl<const D: usize, B: Backend> ModuleDisplayDefault for Param<Tensor<B, D, Bool>> {
+    fn content(&self, content: Content) -> Option<Content> {
+        let id = if content.display_settings.show_param_id() {
+            format!(", id: {}", self.id)
+        } else {
+            "".to_string()
+        };
+
+        let string = format!(
+            "ParamTensor {{rank: {D}, shape: {:?}, kind: bool{id}}}",
+            self.shape().dims
+        );
+        content.add_formatted(&string).optional()
+    }
+}
+
+impl<const D: usize, B: Backend> ModuleDisplay for Param<Tensor<B, D, Bool>> {}
+
 impl<const D: usize, B: AutodiffBackend> AutodiffModule<B> for Param<Tensor<B, D>> {
     type InnerModule = Param<Tensor<B::InnerBackend, D>>;
 
     fn valid(&self) -> Self::InnerModule {
-        Param::initialized(self.id.clone(), self.val().inner().set_require_grad(false))
+        Param::initialized(self.id, self.val().inner().set_require_grad(false))
     }
 }
 
@@ -261,7 +313,7 @@ impl<const D: usize, B: AutodiffBackend> AutodiffModule<B> for Param<Tensor<B, D
     type InnerModule = Param<Tensor<B::InnerBackend, D, Int>>;
 
     fn valid(&self) -> Self::InnerModule {
-        Param::initialized(self.id.clone(), self.val().inner())
+        Param::initialized(self.id, self.val().inner())
     }
 }
 
@@ -269,7 +321,7 @@ impl<const D: usize, B: AutodiffBackend> AutodiffModule<B> for Param<Tensor<B, D
     type InnerModule = Param<Tensor<B::InnerBackend, D, Bool>>;
 
     fn valid(&self) -> Self::InnerModule {
-        Param::initialized(self.id.clone(), self.val().inner())
+        Param::initialized(self.id, self.val().inner())
     }
 }
 

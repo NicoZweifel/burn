@@ -1,7 +1,18 @@
 use super::ParamId;
-use crate::module::{AutodiffModule, Module, ModuleMapper, ModuleVisitor, Param};
-use alloc::sync::Arc;
+use crate::module::{
+    AutodiffModule, Content, Module, ModuleDisplay, ModuleDisplayDefault, ModuleMapper,
+    ModuleVisitor, Param,
+};
+
+use alloc::string::ToString;
 use alloc::vec::Vec;
+
+#[cfg(target_has_atomic = "ptr")]
+use alloc::sync::Arc;
+
+#[cfg(not(target_has_atomic = "ptr"))]
+use portable_atomic_util::Arc;
+
 use burn_common::stub::Mutex;
 use burn_tensor::{
     backend::{AutodiffBackend, Backend},
@@ -45,18 +56,35 @@ pub struct RunningState<V> {
     value: Arc<Mutex<V>>,
 }
 
+// Implement display for the module
+
+impl<V> core::fmt::Display for RunningState<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "RunningState(id={})", self.id)
+    }
+}
+
+impl<V> ModuleDisplayDefault for RunningState<V> {
+    fn content(&self, content: Content) -> Option<Content> {
+        content
+            .add_formatted(&"RunningState".to_string())
+            .optional()
+    }
+}
+
+impl<V> ModuleDisplay for RunningState<V> {}
+
 impl<const D: usize, B: Backend> Module<B> for RunningState<Tensor<B, D>> {
     type Record = Param<Tensor<B, D>>;
 
     fn visit<V: ModuleVisitor<B>>(&self, visitor: &mut V) {
         let tensor = self.value.lock().unwrap();
-
-        visitor.visit_float(&self.id, &tensor)
+        visitor.visit_float(self.id, &tensor)
     }
 
     fn map<M: ModuleMapper<B>>(self, mapper: &mut M) -> Self {
         let mut tensor = self.value.lock().unwrap();
-        let tensor_out = mapper.map_float(&self.id, tensor.clone());
+        let tensor_out = mapper.map_float(self.id, tensor.clone());
 
         *tensor = tensor_out;
         core::mem::drop(tensor);
@@ -217,6 +245,6 @@ impl<const D: usize, B: AutodiffBackend> AutodiffModule<B> for RunningState<Tens
         self.sync();
         let value = self.value();
 
-        RunningState::with_id(self.id.clone(), value.inner())
+        RunningState::with_id(self.id, value.inner())
     }
 }

@@ -43,6 +43,7 @@ Available Benchmarks:
 - custom-gelu
 - data
 - matmul
+- resnet50
 - unary
 ```
 
@@ -78,7 +79,7 @@ Running benchmarks...
 
 By default `burnbench` uses a compact output with a progress bar which hides the
 compilation logs and benchmarks results as they are executed. If a benchmark
-failed to run, the `--verbose` flag can be use to investigate the error.
+failed to run, the `--verbose` flag can be used to investigate the error.
 
 #### Authentication and benchmarks sharing
 
@@ -144,7 +145,7 @@ Then it must be registered in the `BenchmarkValues` enumeration:
 ```rs
 
 #[derive(Debug, Clone, PartialEq, Eq, ValueEnum, Display, EnumIter)]
-pub(crate) enum BackendValues {
+pub(crate) enum BenchmarkValues {
     // ...
     #[strum(to_string = "mybench")]
     MyBench,

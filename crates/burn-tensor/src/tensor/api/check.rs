@@ -46,10 +46,10 @@ impl TensorCheck {
     ) -> Self {
         Self::Ok
             .binary_ops_device(ops, &lhs.device(), &rhs.device())
-            .binary_ops_ew_shape(ops, &lhs.shape(), &rhs.shape())
+            .binary_ops_ew_shape::<D>(ops, &lhs.shape(), &rhs.shape())
     }
 
-    pub(crate) fn into_scalar<const D: usize>(shape: &Shape<D>) -> Self {
+    pub(crate) fn into_scalar<const D: usize>(shape: &Shape) -> Self {
         let mut check = Self::Ok;
 
         if shape.num_elements() != 1 {
@@ -74,6 +74,28 @@ impl TensorCheck {
                 ops,
                 TensorError::new("Given dimension is higher than the tensor rank.")
                     .details(format!("Tensor rank: '{D}', given dimension: '{dim}'.")),
+            );
+        }
+
+        check
+    }
+
+    pub(crate) fn creation_ops<const D: usize>(ops: &str, dims: &[usize]) -> Self {
+        let mut check = Self::Ok;
+
+        if D == 0 {
+            check = check.register(
+                ops,
+                TensorError::new("Tried to create a 0-dim tensor, which is invalid.")
+                    .details(format!("Tensor rank: '{D}', given dimensions: '{dims:?}'.")),
+            );
+        }
+
+        if dims.len() != D {
+            check = check.register(
+                ops,
+                TensorError::new("Given dimensions differ from the tensor rank.")
+                    .details(format!("Tensor rank: '{D}', given dimensions: '{dims:?}'.")),
             );
         }
 
@@ -126,8 +148,8 @@ impl TensorCheck {
     }
 
     pub(crate) fn reshape_args_usize<const D1: usize, const D2: usize>(
-        original: &Shape<D1>,
-        target: &Shape<D2>,
+        original: &Shape,
+        target: &Shape,
     ) -> Self {
         let mut check = Self::Ok;
 
@@ -167,6 +189,98 @@ impl TensorCheck {
                 TensorError::new("The given shape cannot contain more than one -1.")
                     .details(format!("Target shape: {:?}.", target)),
             );
+        }
+
+        check
+    }
+
+    pub(crate) fn movedim_args_usize<const D: usize>(dim: usize) -> Self {
+        let mut check = Self::Ok;
+
+        if dim >= D {
+            check = check.register(
+                "Movedim",
+                TensorError::new(
+                    "The given dimension exceeds the number of dimensions of the current tensor.",
+                )
+                .details(format!(
+                    "Current tensor has {D} dimensions, but the given dimension is {dim}.",
+                )),
+            );
+        }
+
+        check
+    }
+
+    pub(crate) fn movedim_args_i32<const D: usize>(dim: i32) -> Self {
+        let mut check = Self::Ok;
+
+        if dim < -(D as i32) || dim >= D as i32 {
+            check = check.register(
+                "Movedim",
+                TensorError::new(
+                    "The given dimension is out of bounds for the current tensor dimensions.",
+                )
+                .details(format!(
+                    "Current tensor has {D} dimensions, but the given dimension is {dim}.",
+                )),
+            );
+        }
+
+        check
+    }
+
+    pub(crate) fn movedim_args_vec<const D: usize>(dims: &Vec<usize>) -> Self {
+        let mut check = Self::Ok;
+
+        // Check out of bounds
+        if dims.iter().any(|&x| x >= D) {
+            check = check.register(
+                "Movedim",
+                TensorError::new("The given dimensions are out of bounds.").details(format!(
+                    "Current tensor has {D} dimensions, but the given dimensions are {:?}.",
+                    dims
+                )),
+            );
+        }
+
+        // Check there are no duplicates
+        for (i, &dim_i) in dims.iter().enumerate() {
+            for &dim_j in dims.iter().skip(i + 1) {
+                if dim_i == dim_j {
+                    check = check.register(
+                        "Movedim",
+                        TensorError::new("The given dimensions contain duplicates.").details(
+                            format!(
+                                "The dimension {} is duplicated in the given dimensions {:?}.",
+                                dim_i, dims
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
+
+        check
+    }
+
+    pub(crate) fn movedim_args_length(
+        source_dims: &Vec<usize>,
+        destination_dims: &Vec<usize>,
+    ) -> Self {
+        let mut check = Self::Ok;
+
+        if source_dims.len() != destination_dims.len() {
+            check = check.register(
+                "Movedim",
+                TensorError::new(
+                    "The number of dimensions in source and destination must be equal.",
+                )
+                .details(format!(
+                    "Source dimensions: {:?}, Destination dimensions: {:?}.",
+                    source_dims, destination_dims
+                )),
+            )
         }
 
         check
@@ -248,6 +362,36 @@ impl TensorCheck {
         check
     }
 
+    pub(crate) fn squeeze_dims_input<const D2: usize>(
+        dim_indices: &[usize],
+        current_dims: &[usize],
+    ) -> Self {
+        let mut check = Self::Ok;
+        if dim_indices.len() >= current_dims.len() {
+            check = check.register(
+                "Squeeze",
+                TensorError::new("Attempted to squeeze too many dimensions!"),
+            );
+        }
+
+        check
+    }
+
+    pub(crate) fn squeeze_dims_len<const D2: usize>(new_dims_len: usize) -> Self {
+        let mut check = Self::Ok;
+        if new_dims_len != D2 {
+            check = check.register(
+                "Squeeze",
+                TensorError::new(format!(
+                    "Resulting dimensions {} do not match the required D2 size {}.",
+                    new_dims_len, D2
+                )),
+            );
+        }
+
+        check
+    }
+
     pub(crate) fn unsqueeze<const D1: usize, const D2: usize>() -> Self {
         let mut check = Self::Ok;
         if D2 < D1 {
@@ -262,14 +406,24 @@ impl TensorCheck {
         check
     }
 
-    pub(crate) fn unsqueeze_dim<const D: usize>(dim: usize) -> Self {
+    pub(crate) fn unsqueeze_dim<const D1: usize, const D2: usize>(dim: usize) -> Self {
         let mut check = Self::Ok;
-        if dim > D {
+        if dim > D1 {
             check = check.register(
                 "Unsqueeze",
                 TensorError::new(format!(
                     "Can't unsqueeze at dimension {}, exceeds tensor dimensions (D={})",
-                    dim, D
+                    dim, D1
+                )),
+            );
+        }
+
+        if dim >= D2 {
+            check = check.register(
+                "Unsqueeze",
+                TensorError::new(format!(
+                    "Can't unsqueeze at dimension {}, exceeds output tensor dimensions (D2={})",
+                    dim, D2
                 )),
             );
         }
@@ -283,7 +437,7 @@ impl TensorCheck {
         //contains is right exclusive, so this is to spec
         if !(-output_rank..output_rank).contains(&dim) {
             check = check.register(
-                "Unsqeeze",
+                "Unsqueeze",
                 TensorError::new(format!(
                     "unsqueeze arg {} is out of range for the output tensor of rank {}",
                     dim, output_rank
@@ -412,20 +566,31 @@ impl TensorCheck {
         check
     }
 
-    pub(crate) fn stack<B: Backend, const D: usize, K: BasicOps<B>>(
-        tensors: &[Tensor<B, D, K>],
+    pub(crate) fn stack<B: Backend, const D1: usize, K: BasicOps<B>, const D2: usize>(
+        tensors: &[Tensor<B, D1, K>],
         dim: usize,
     ) -> Self {
         let mut check = Self::Ok;
 
-        if dim > D {
+        if dim > D1 {
             check = check.register(
                 "Stack",
                 TensorError::new(
                     "Can't stack tensors on a dim that exceeds the tensors dimension (inclusive)",
                 )
                 .details(format!(
-                    "Trying to concatenate tensors with {D} dimensions on axis {dim}."
+                    "Trying to concatenate tensors with {D1} dimensions on axis {dim}."
+                )),
+            );
+        }
+
+        if D1 == D2 {
+            check = check.register(
+                "Stack",
+                TensorError::new(format!(
+                    "Can't stack tensors on existing dimension {}, the input and output ranks are the same (D={}; D2={}).\
+                    If you want to concatenate the tensors along the specified dimension ({}), use `Tensor::cat` instead.",
+                    dim, D1, D2, dim
                 )),
             );
         }
@@ -510,7 +675,7 @@ impl TensorCheck {
     }
 
     pub(crate) fn slice<const D1: usize, const D2: usize>(
-        shape: &Shape<D1>,
+        shape: &Shape,
         ranges: &[Range<usize>; D2],
     ) -> Self {
         let mut check = Self::Ok;
@@ -571,8 +736,8 @@ impl TensorCheck {
     }
 
     pub(crate) fn slice_assign<const D1: usize, const D2: usize>(
-        shape: &Shape<D1>,
-        shape_value: &Shape<D1>,
+        shape: &Shape,
+        shape_value: &Shape,
         ranges: &[Range<usize>; D2],
     ) -> Self {
         let mut check = Self::Ok;
@@ -653,23 +818,19 @@ impl TensorCheck {
         check
     }
 
-    pub(crate) fn gather<const D: usize>(
-        dim: usize,
-        shape: &Shape<D>,
-        shape_indices: &Shape<D>,
-    ) -> Self {
-        Self::check_gather_scatter_indices(Self::Ok, "Gather", dim, shape, shape_indices)
+    pub(crate) fn gather<const D: usize>(dim: usize, shape: &Shape, shape_indices: &Shape) -> Self {
+        Self::check_gather_scatter_indices::<D>(Self::Ok, "Gather", dim, shape, shape_indices)
     }
 
     pub(crate) fn scatter<const D: usize>(
         dim: usize,
-        shape: &Shape<D>,
-        shape_indices: &Shape<D>,
-        shape_value: &Shape<D>,
+        shape: &Shape,
+        shape_indices: &Shape,
+        shape_value: &Shape,
     ) -> Self {
         let ops = "Scatter";
         let mut check =
-            Self::check_gather_scatter_indices(Self::Ok, ops, dim, shape, shape_indices);
+            Self::check_gather_scatter_indices::<D>(Self::Ok, ops, dim, shape, shape_indices);
 
         if shape_indices != shape_value {
             check = check.register(
@@ -712,8 +873,8 @@ impl TensorCheck {
         mut check: Self,
         ops: &str,
         dim: usize,
-        shape: &Shape<D>,
-        shape_indices: &Shape<D>,
+        shape: &Shape,
+        shape_indices: &Shape,
     ) -> Self {
         if dim > D {
             check = check.register(
@@ -748,9 +909,10 @@ impl TensorCheck {
 
         check
     }
+
     pub(crate) fn check_prelu_shape<const D: usize>(
-        shape_tensor: &Shape<D>,
-        shape_weight: &Shape<1>,
+        shape_tensor: &Shape,
+        shape_weight: &Shape,
     ) -> Self {
         let mut check = Self::Ok;
         if shape_weight.dims[0] == 1 {
@@ -840,8 +1002,8 @@ impl TensorCheck {
     pub(crate) fn binary_ops_ew_shape<const D: usize>(
         self,
         ops: &str,
-        lhs: &Shape<D>,
-        rhs: &Shape<D>,
+        lhs: &Shape,
+        rhs: &Shape,
     ) -> Self {
         let mut check = self;
 
@@ -891,11 +1053,7 @@ impl TensorCheck {
     }
 
     /// Checks if expand operation is possible for the given shapes.
-    pub fn expand<const D1: usize, const D2: usize>(
-        ops: &str,
-        shape: &Shape<D1>,
-        to: &Shape<D2>,
-    ) -> Self {
+    pub fn expand<const D1: usize, const D2: usize>(ops: &str, shape: &Shape, to: &Shape) -> Self {
         let mut check = TensorCheck::Ok;
         let max_dims = core::cmp::max(D1, D2);
 
@@ -1014,7 +1172,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn reshape_invalid_shape() {
-        check!(TensorCheck::reshape_args_usize(
+        check!(TensorCheck::reshape_args_usize::<2, 2>(
             &Shape::new([2, 2]),
             &Shape::new([1, 3])
         ));
@@ -1022,7 +1180,7 @@ mod tests {
 
     #[test]
     fn reshape_valid_shape() {
-        check!(TensorCheck::reshape_args_usize(
+        check!(TensorCheck::reshape_args_usize::<2, 2>(
             &Shape::new([2, 2]),
             &Shape::new([1, 4])
         ));
@@ -1031,7 +1189,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn index_range_exceed_dimension() {
-        check!(TensorCheck::slice(
+        check!(TensorCheck::slice::<3, 3>(
             &Shape::new([3, 5, 7]),
             &[0..2, 0..4, 1..8]
         ));
@@ -1040,13 +1198,16 @@ mod tests {
     #[test]
     #[should_panic]
     fn index_range_exceed_number_of_dimensions() {
-        check!(TensorCheck::slice(&Shape::new([3, 5]), &[0..1, 0..1, 0..1]));
+        check!(TensorCheck::slice::<2, 3>(
+            &Shape::new([3, 5]),
+            &[0..1, 0..1, 0..1]
+        ));
     }
 
     #[test]
     #[should_panic]
     fn binary_ops_shapes_no_broadcast() {
-        check!(TensorCheck::binary_ops_ew_shape(
+        check!(TensorCheck::binary_ops_ew_shape::<2>(
             TensorCheck::Ok,
             "TestOps",
             &Shape::new([3, 5]),
@@ -1056,7 +1217,7 @@ mod tests {
 
     #[test]
     fn binary_ops_shapes_with_broadcast() {
-        check!(TensorCheck::binary_ops_ew_shape(
+        check!(TensorCheck::binary_ops_ew_shape::<2>(
             TensorCheck::Ok,
             "Test",
             &Shape::new([3, 5]),
@@ -1072,6 +1233,44 @@ mod tests {
             "Test",
             &5, // We can pass anything that implements PartialEq as device
             &8
+        ));
+    }
+
+    #[test]
+    #[should_panic]
+    fn movedim_args_out_of_bounds() {
+        check!(TensorCheck::movedim_args_usize::<3>(5));
+    }
+
+    #[test]
+    fn movedim_args_i32() {
+        check!(TensorCheck::movedim_args_i32::<3>(-3));
+    }
+
+    #[test]
+    #[should_panic]
+    fn movedim_args_too_negative() {
+        check!(TensorCheck::movedim_args_i32::<3>(-4));
+    }
+
+    #[test]
+    #[should_panic]
+    fn movedim_args_vec_out_of_bounds() {
+        check!(TensorCheck::movedim_args_vec::<3>(&vec![0, 1, 3]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn movedim_args_vec_duplicates() {
+        check!(TensorCheck::movedim_args_vec::<3>(&vec![0, 1, 1]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn movedim_args_length() {
+        check!(TensorCheck::movedim_args_length(
+            &vec![0, 1],
+            &vec![0, 1, 2]
         ));
     }
 }

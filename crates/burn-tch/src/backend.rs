@@ -1,8 +1,8 @@
-use crate::PrecisionBridge;
+use crate::{PrecisionBridge, QuantElement, TchQTensor};
 
 use super::element::TchElement;
 use super::TchTensor;
-use burn_tensor::backend::Backend;
+use burn_tensor::backend::{Backend, DeviceId, DeviceOps, SyncType};
 use burn_tensor::ops::IntTensorOps;
 use burn_tensor::{Int, Tensor};
 
@@ -59,6 +59,17 @@ impl From<tch::Device> for LibTorchDevice {
     }
 }
 
+impl DeviceOps for LibTorchDevice {
+    fn id(&self) -> burn_tensor::backend::DeviceId {
+        match self {
+            LibTorchDevice::Cpu => DeviceId::new(0, 0),
+            LibTorchDevice::Cuda(index) => DeviceId::new(1, *index as u32),
+            LibTorchDevice::Mps => DeviceId::new(2, 0),
+            LibTorchDevice::Vulkan => DeviceId::new(3, 0),
+        }
+    }
+}
+
 impl Default for LibTorchDevice {
     fn default() -> Self {
         Self::Cpu
@@ -75,21 +86,25 @@ impl Default for LibTorchDevice {
 ///
 /// Refer to the [tch] crate for more information.
 #[derive(Clone, Copy, Default, Debug)]
-pub struct LibTorch<E = f32> {
+pub struct LibTorch<E = f32, Q = i8> {
     _e: E,
+    _q: Q,
 }
 
-impl<E: TchElement> Backend for LibTorch<E> {
+impl<E: TchElement, Q: QuantElement> Backend for LibTorch<E, Q> {
     type Device = LibTorchDevice;
     type FullPrecisionBridge = PrecisionBridge<f32>;
 
-    type FloatTensorPrimitive<const D: usize> = TchTensor<E, D>;
+    type FloatTensorPrimitive = TchTensor<E>;
     type FloatElem = E;
 
-    type IntTensorPrimitive<const D: usize> = TchTensor<i64, D>;
+    type IntTensorPrimitive = TchTensor<i64>;
     type IntElem = i64;
 
-    type BoolTensorPrimitive<const D: usize> = TchTensor<bool, D>;
+    type BoolTensorPrimitive = TchTensor<bool>;
+
+    type QuantizedTensorPrimitive = TchQTensor<Q>;
+    type QuantizedEncoding = Q;
 
     fn seed(seed: u64) {
         tch::manual_seed(seed as i64);
@@ -103,19 +118,20 @@ impl<E: TchElement> Backend for LibTorch<E> {
         "tch".to_string()
     }
 
-    fn sync(device: &Self::Device) {
-        match device {
-            LibTorchDevice::Cpu => (),
-            LibTorchDevice::Cuda(index) => {
-                tch::Cuda::synchronize(*index as i64);
-            }
-            _ => {
-                // When there is no explicit way to synchronize, we write and read one value to sync
-                Tensor::<Self, 1, Int>::from_primitive(<Self as IntTensorOps<Self>>::int_zeros(
-                    [1].into(),
-                    device,
-                ))
-                .into_data();
+    fn sync(device: &Self::Device, sync_type: SyncType) {
+        if sync_type == SyncType::Wait {
+            match device {
+                LibTorchDevice::Cpu => (),
+                LibTorchDevice::Cuda(index) => {
+                    tch::Cuda::synchronize(*index as i64);
+                }
+                _ => {
+                    // When there is no explicit way to synchronize, we write and read one value to sync
+                    Tensor::<Self, 1, Int>::from_primitive(
+                        <Self as IntTensorOps<Self>>::int_zeros([1].into(), device),
+                    )
+                    .into_data();
+                }
             }
         }
     }

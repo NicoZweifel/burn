@@ -6,7 +6,9 @@ mod cast;
 mod cat;
 mod clamp;
 mod conv2d;
+mod conv3d;
 mod conv_transpose2d;
+mod conv_transpose3d;
 mod gather;
 mod mask_fill;
 mod mask_where;
@@ -14,8 +16,9 @@ mod matmul;
 mod max_pool2d;
 mod max_pool2d_backward;
 mod normal;
+mod quantization;
 mod reduce;
-mod repeat;
+mod repeat_dim;
 mod scatter;
 mod select;
 mod select_assign;
@@ -42,9 +45,11 @@ macro_rules! testgen_all {
 
                 burn_jit::testgen_reduction!();
                 burn_jit::testgen_conv2d!();
+                burn_jit::testgen_conv3d!();
                 burn_jit::testgen_conv_transpose2d!();
+                burn_jit::testgen_conv_transpose3d!();
 
-                burn_jit::testgen_repeat!();
+                burn_jit::testgen_repeat_dim!();
                 burn_jit::testgen_gather!();
                 burn_jit::testgen_scatter!();
 
@@ -69,7 +74,8 @@ macro_rules! testgen_all {
                 burn_jit::testgen_cat!();
                 burn_jit::testgen_clamp!();
                 burn_jit::testgen_unary!();
-                burn_jit::testgen_matmul!();
+
+                burn_jit::testgen_quantization!();
             }
         }
         mod jit_fusion {
@@ -84,7 +90,7 @@ macro_rules! testgen_jit {
         use super::*;
         use burn_jit::tests::{burn_autodiff, burn_ndarray, burn_tensor, serial_test};
 
-        pub type TestBackend = JitBackend<TestRuntime>;
+        pub type TestBackend = JitBackend<TestRuntime, f32, i32>;
         pub type ReferenceBackend = burn_ndarray::NdArray<f32>;
 
         pub type TestTensor<const D: usize> = burn_tensor::Tensor<TestBackend, D>;
@@ -97,6 +103,14 @@ macro_rules! testgen_jit {
 
         burn_tensor::testgen_all!();
         burn_autodiff::testgen_all!();
+
+        // Not all ops are implemented for quantization yet, notably missing:
+        // `q_swap_dims`, `q_permute`, `q_flip`, `q_gather`, `q_select`, `q_slice`, `q_expand`
+        // burn_tensor::testgen_quantization!();
+        // test quantization
+        burn_tensor::testgen_calibration!();
+        burn_tensor::testgen_scheme!();
+        burn_tensor::testgen_quantize!();
     };
 }
 
@@ -106,7 +120,7 @@ macro_rules! testgen_jit_fusion {
         use super::*;
         use burn_jit::tests::{burn_autodiff, burn_fusion, burn_ndarray, burn_tensor};
 
-        pub type TestBackend = burn_fusion::Fusion<JitBackend<TestRuntime>>;
+        pub type TestBackend = burn_fusion::Fusion<JitBackend<TestRuntime, f32, i32>>;
         pub type ReferenceBackend = burn_ndarray::NdArray<f32>;
 
         pub type TestTensor<const D: usize> = burn_tensor::Tensor<TestBackend, D>;
@@ -119,5 +133,13 @@ macro_rules! testgen_jit_fusion {
 
         burn_tensor::testgen_all!();
         burn_autodiff::testgen_all!();
+
+        // Not all ops are implemented for quantization yet, notably missing:
+        // `q_swap_dims`, `q_permute`, `q_flip`, `q_gather`, `q_select`, `q_slice`, `q_expand`
+        // burn_tensor::testgen_quantization!();
+        // test quantization
+        burn_tensor::testgen_calibration!();
+        burn_tensor::testgen_scheme!();
+        burn_tensor::testgen_quantize!();
     };
 }

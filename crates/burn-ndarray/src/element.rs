@@ -1,6 +1,5 @@
 use burn_tensor::Element;
 use ndarray::LinalgScalar;
-use num_traits::One;
 use num_traits::Signed;
 
 #[cfg(not(feature = "std"))]
@@ -20,7 +19,6 @@ where
 /// A general element for ndarray backend.
 pub trait NdArrayElement:
     Element
-    + One
     + ndarray::LinalgScalar
     + ndarray::ScalarOperand
     + ExpElement
@@ -42,6 +40,11 @@ pub trait ExpElement {
     fn abs_elem(self) -> Self;
     fn int_abs_elem(self) -> Self;
 }
+
+/// A quantized element for the ndarray backend.
+pub trait QuantElement: NdArrayElement {}
+
+impl QuantElement for i8 {}
 
 impl FloatNdArrayElement for f64 {}
 impl FloatNdArrayElement for f32 {}
@@ -151,7 +154,7 @@ macro_rules! make_elem {
 
             #[inline(always)]
             fn int_abs_elem(self) -> Self {
-                (self as i32).abs() as $ty
+                (self as i32).unsigned_abs() as $ty
             }
         }
     };
@@ -163,4 +166,5 @@ make_elem!(double i64);
 make_elem!(single f32);
 make_elem!(single i32);
 make_elem!(single i16);
+make_elem!(single i8);
 make_elem!(single u8);

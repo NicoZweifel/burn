@@ -1,13 +1,13 @@
 #[burn_tensor_testgen::testgen(gradients)]
 mod tests {
     use super::*;
-    use burn_tensor::{activation, Data, Distribution};
+    use burn_tensor::{activation, Distribution};
 
     #[test]
     fn should_update_tensor_when_grad_replace() {
         let device = Default::default();
-        let tensor_1 =
-            TestAutodiffTensor::random([32, 32], Distribution::Default, &device).require_grad();
+        let tensor_1 = TestAutodiffTensor::<2>::random([32, 32], Distribution::Default, &device)
+            .require_grad();
         let tensor_2 = TestAutodiffTensor::random([32, 32], Distribution::Default, &device);
 
         let x = tensor_1.clone().matmul(activation::gelu(tensor_2));

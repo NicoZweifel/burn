@@ -4,29 +4,29 @@ use burn::{
     module::{ConstantRecord, Param, ParamId},
     nn::conv::{ConvTranspose2dConfig, ConvTranspose2dRecord},
     record::{PrecisionSettings, Record},
-    tensor::{DataSerialize, Tensor},
+    tensor::{Tensor, TensorData},
 };
 use proc_macro2::TokenStream;
 use quote::quote;
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
-pub struct ConvTranspose2dNode<PS: PrecisionSettings> {
+pub struct ConvTranspose2dNode {
     pub field: OtherType,
     pub input: TensorType,
     pub output: TensorType,
-    pub data_weights: DataSerialize<PS::FloatElem>,
-    pub data_bias: Option<DataSerialize<PS::FloatElem>>,
+    pub data_weights: TensorData,
+    pub data_bias: Option<TensorData>,
     pub config: ConvTranspose2dConfig,
 }
 
-impl<PS: PrecisionSettings> ConvTranspose2dNode<PS> {
+impl ConvTranspose2dNode {
     pub fn new<S: AsRef<str>>(
         name: S,
         input: TensorType,
         output: TensorType,
-        data_weights: DataSerialize<PS::FloatElem>,
-        data_bias: Option<DataSerialize<PS::FloatElem>>,
+        data_weights: TensorData,
+        data_bias: Option<TensorData>,
         config: ConvTranspose2dConfig,
     ) -> Self {
         Self {
@@ -45,7 +45,7 @@ impl<PS: PrecisionSettings> ConvTranspose2dNode<PS> {
     }
 }
 
-impl<PS: PrecisionSettings> NodeCodegen<PS> for ConvTranspose2dNode<PS> {
+impl<PS: PrecisionSettings> NodeCodegen<PS> for ConvTranspose2dNode {
     fn input_types(&self) -> Vec<Type> {
         vec![Type::Tensor(self.input.clone())]
     }
@@ -64,12 +64,14 @@ impl<PS: PrecisionSettings> NodeCodegen<PS> for ConvTranspose2dNode<PS> {
         let dilation = self.config.dilation.to_tokens();
         let groups = self.config.groups.to_tokens();
         let padding = self.config.padding.to_tokens();
+        let padding_out = self.config.padding_out.to_tokens();
         let bias = self.config.bias;
 
         let tokens = quote! {
             let #name = ConvTranspose2dConfig::new(#channels, #kernel_size)
                 .with_stride(#stride)
                 .with_padding(#padding)
+                .with_padding_out(#padding_out)
                 .with_dilation(#dilation)
                 .with_groups(#groups)
                 .with_bias(#bias)
@@ -84,12 +86,15 @@ impl<PS: PrecisionSettings> NodeCodegen<PS> for ConvTranspose2dNode<PS> {
         let record = ConvTranspose2dRecord::<SerializationBackend> {
             weight: Param::initialized(
                 ParamId::new(),
-                Tensor::from_data(self.data_weights.clone().convert(), &device),
+                Tensor::from_data(
+                    self.data_weights.clone().convert::<PS::FloatElem>(),
+                    &device,
+                ),
             ),
             bias: self.data_bias.as_ref().map(|bias| {
                 Param::initialized(
                     ParamId::new(),
-                    Tensor::from_data(bias.clone().convert(), &device),
+                    Tensor::from_data(bias.clone().convert::<PS::FloatElem>(), &device),
                 )
             }),
             stride: [ConstantRecord::new(); 2],
@@ -98,6 +103,7 @@ impl<PS: PrecisionSettings> NodeCodegen<PS> for ConvTranspose2dNode<PS> {
             groups: ConstantRecord::new(),
             padding: [ConstantRecord::new(); 2],
             padding_out: [ConstantRecord::new(); 2],
+            channels: [ConstantRecord::new(); 2],
         };
 
         let item = Record::into_item::<PS>(record);
@@ -131,7 +137,7 @@ mod tests {
         node::{conv_transpose_2d::ConvTranspose2dNode, test::assert_tokens},
         TensorType,
     };
-    use burn::{nn::conv::ConvTranspose2dConfig, record::FullPrecisionSettings, tensor::Data};
+    use burn::{nn::conv::ConvTranspose2dConfig, record::FullPrecisionSettings};
 
     #[test]
     fn test_codegen() {
@@ -141,7 +147,7 @@ mod tests {
             "conv_transpose_2d",
             TensorType::new_float("input", 4),
             TensorType::new_float("output", 4),
-            Data::from([2.]).serialize(),
+            TensorData::from([2f32]),
             None,
             ConvTranspose2dConfig::new([3, 3], [3, 3]).with_padding([0, 0]),
         ));
@@ -160,6 +166,7 @@ mod tests {
             pub struct Model <B: Backend> {
                 conv_transpose_2d: ConvTranspose2d<B>,
                 phantom: core::marker::PhantomData<B>,
+                device: burn::module::Ignored<B::Device>,
             }
 
             impl<B: Backend> Model <B> {
@@ -168,6 +175,7 @@ mod tests {
                     let conv_transpose_2d = ConvTranspose2dConfig::new([3, 3], [3, 3])
                         .with_stride([1, 1])
                         .with_padding([0, 0])
+                        .with_padding_out([0, 0])
                         .with_dilation([1, 1])
                         .with_groups(1)
                         .with_bias(true)
@@ -176,6 +184,7 @@ mod tests {
                     Self {
                         conv_transpose_2d,
                         phantom: core::marker::PhantomData,
+                        device: burn::module::Ignored(device.clone()),
                     }
                 }
                 #[allow(clippy::let_and_return, clippy::approx_constant)]

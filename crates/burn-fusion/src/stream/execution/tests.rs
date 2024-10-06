@@ -6,16 +6,20 @@
 //! To test these components effectively, we create mock types for the stream, optimization,
 //! optimization builder, and stream segment. These mock types aid in comprehensively
 //! understanding the process of optimizing streams.
-use crate::{
-    stream::{
-        store::{
-            ExecutionPlan, ExecutionPlanId, ExecutionPlanStore, ExecutionStrategy, ExecutionTrigger,
-        },
+use burn_tensor::{
+    repr::{
         BinaryOperationDescription, FloatOperationDescription, NumericOperationDescription,
-        OperationDescription, ScalarOperationDescription,
+        OperationDescription, ScalarOperationDescription, TensorDescription, TensorId,
+        TensorStatus, UnaryOperationDescription,
     },
-    OptimizationBuilder, OptimizationProperties, OptimizationStatus, TensorDescription, TensorId,
-    TensorStatus,
+    DType,
+};
+
+use crate::{
+    stream::store::{
+        ExecutionPlan, ExecutionPlanId, ExecutionPlanStore, ExecutionStrategy, ExecutionTrigger,
+    },
+    OptimizationBuilder, OptimizationProperties, OptimizationStatus,
 };
 
 use super::*;
@@ -29,6 +33,9 @@ struct TestStream {
 }
 
 /// A fake [optimization builder](OptimizationBuilder) for testing purpose.
+///
+/// The optimizer tries to fuse only the `expected_operations` if they appear
+/// in the operations queue
 struct TestOptimizationBuilder {
     builder_id: usize,
     expected_operations: Vec<OperationDescription>,
@@ -112,7 +119,7 @@ fn should_support_complex_stream() {
     stream.assert_number_of_operations(1);
     stream.assert_number_of_executions(2);
 
-    // Nothing to execute.
+    // Now we should trigger the second optimization builder.
     stream.add(operation_2());
     stream.assert_number_of_operations(0);
     stream.assert_number_of_executions(3);
@@ -126,7 +133,7 @@ fn should_support_complex_stream() {
         },
     );
 
-    // Now we should trigger the second optimization builder.
+    // Nothing to execute.
     stream.add(operation_1());
     stream.assert_number_of_operations(1);
     stream.assert_number_of_executions(3);
@@ -150,7 +157,7 @@ fn should_support_complex_stream() {
     stream.assert_number_of_operations(1);
     stream.assert_number_of_executions(4);
 
-    // Nothing to execute.
+    // Now we should trigger the first optimization builder (third plan).
     stream.add(operation_2());
     stream.assert_number_of_operations(0);
     stream.assert_number_of_executions(5);
@@ -516,60 +523,70 @@ impl<'i> StreamSegment<TestOptimization> for TestSegment<'i> {
 
 /// Just a simple operation.
 fn operation_1() -> OperationDescription {
-    OperationDescription::NumericFloat(NumericOperationDescription::Add(
-        BinaryOperationDescription {
+    OperationDescription::NumericFloat(
+        DType::F32,
+        NumericOperationDescription::Add(BinaryOperationDescription {
             lhs: TensorDescription {
                 id: TensorId::new(0),
                 shape: vec![32, 32],
                 status: TensorStatus::ReadOnly,
+                dtype: DType::F32,
             },
             rhs: TensorDescription {
                 id: TensorId::new(1),
                 shape: vec![32, 32],
                 status: TensorStatus::ReadOnly,
+                dtype: DType::F32,
             },
             out: TensorDescription {
                 id: TensorId::new(2),
                 shape: vec![32, 32],
                 status: TensorStatus::NotInit,
+                dtype: DType::F32,
             },
-        },
-    ))
+        }),
+    )
 }
 
 /// Just a simple operation.
 fn operation_2() -> OperationDescription {
-    OperationDescription::NumericFloat(NumericOperationDescription::AddScalar(
-        ScalarOperationDescription {
+    OperationDescription::NumericFloat(
+        DType::F32,
+        NumericOperationDescription::AddScalar(ScalarOperationDescription {
             lhs: TensorDescription {
                 id: TensorId::new(0),
                 shape: vec![32, 32],
                 status: TensorStatus::ReadOnly,
+                dtype: DType::F32,
             },
             rhs: 5.0,
             out: TensorDescription {
                 id: TensorId::new(2),
                 shape: vec![32, 32],
                 status: TensorStatus::NotInit,
+                dtype: DType::F32,
             },
-        },
-    ))
+        }),
+    )
 }
 
 /// Just a simple operation.
 fn operation_3() -> OperationDescription {
-    OperationDescription::Float(FloatOperationDescription::Log(
-        crate::stream::UnaryOperationDescription {
+    OperationDescription::Float(
+        DType::F32,
+        FloatOperationDescription::Log(UnaryOperationDescription {
             input: TensorDescription {
                 id: TensorId::new(0),
                 shape: vec![32, 32],
                 status: TensorStatus::ReadOnly,
+                dtype: DType::F32,
             },
             out: TensorDescription {
                 id: TensorId::new(0),
                 shape: vec![32, 32],
                 status: TensorStatus::NotInit,
+                dtype: DType::F32,
             },
-        },
-    ))
+        }),
+    )
 }

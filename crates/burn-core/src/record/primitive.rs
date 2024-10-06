@@ -1,15 +1,13 @@
-use alloc::{
-    string::{String, ToString},
-    vec,
-    vec::Vec,
-};
+use alloc::{string::String, vec, vec::Vec};
 use core::{fmt, marker::PhantomData};
 
 use super::tensor::{BoolTensorSerde, FloatTensorSerde, IntTensorSerde};
 use super::{PrecisionSettings, Record};
 use crate::module::{Param, ParamId};
 
-use burn_tensor::{backend::Backend, Bool, DataSerialize, Element, Int, Tensor};
+#[allow(deprecated)]
+use burn_tensor::DataSerialize;
+use burn_tensor::{backend::Backend, Bool, Element, Int, Tensor};
 
 use hashbrown::HashMap;
 use serde::{
@@ -131,7 +129,7 @@ where
     fn into_item<S: PrecisionSettings>(self) -> Self::Item<S> {
         let mut items = HashMap::with_capacity(self.len());
         self.into_iter().for_each(|(id, record)| {
-            items.insert(id.to_string(), record.into_item());
+            items.insert(id.serialize(), record.into_item());
         });
         items
     }
@@ -139,12 +137,13 @@ where
     fn from_item<S: PrecisionSettings>(item: Self::Item<S>, device: &B::Device) -> Self {
         let mut record = HashMap::with_capacity(item.len());
         item.into_iter().for_each(|(id, item)| {
-            record.insert(ParamId::from(id), T::from_item(item, device));
+            record.insert(ParamId::deserialize(&id), T::from_item(item, device));
         });
         record
     }
 }
 
+#[allow(deprecated)]
 impl<E, B> Record<B> for DataSerialize<E>
 where
     E: Element,
@@ -176,12 +175,12 @@ where
 
     fn into_item<S: PrecisionSettings>(self) -> Self::Item<S> {
         let (id, tensor) = self.consume();
-        ParamSerde::new(id.into_string(), tensor.into_item())
+        ParamSerde::new(id.serialize(), tensor.into_item())
     }
 
     fn from_item<S: PrecisionSettings>(item: Self::Item<S>, device: &B::Device) -> Self {
         Param::initialized(
-            ParamId::from(item.id),
+            ParamId::deserialize(&item.id),
             Tensor::from_item(item.param, device).require_grad(), // Same behavior as when we create a new
                                                                   // Param from a tensor.
         )
@@ -196,12 +195,12 @@ where
 
     fn into_item<S: PrecisionSettings>(self) -> Self::Item<S> {
         let (id, tensor) = self.consume();
-        ParamSerde::new(id.into_string(), tensor.into_item())
+        ParamSerde::new(id.serialize(), tensor.into_item())
     }
 
     fn from_item<S: PrecisionSettings>(item: Self::Item<S>, device: &B::Device) -> Self {
         Param::initialized(
-            ParamId::from(item.id),
+            ParamId::deserialize(&item.id),
             Tensor::from_item(item.param, device),
         )
     }
@@ -215,12 +214,12 @@ where
 
     fn into_item<S: PrecisionSettings>(self) -> Self::Item<S> {
         let (id, tensor) = self.consume();
-        ParamSerde::new(id.into_string(), tensor.into_item::<S>())
+        ParamSerde::new(id.serialize(), tensor.into_item::<S>())
     }
 
     fn from_item<S: PrecisionSettings>(item: Self::Item<S>, device: &B::Device) -> Self {
         Param::initialized(
-            ParamId::from(item.id),
+            ParamId::deserialize(&item.id),
             Tensor::from_item::<S>(item.param, device),
         )
     }

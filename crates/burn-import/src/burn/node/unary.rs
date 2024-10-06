@@ -28,12 +28,16 @@ pub enum UnaryNodeKind {
     Flatten,
     Gelu,
     LeakyRelu,
+    HardSigmoid,
     Log,
     LogSoftmax,
     Neg,
     Not,
     ReduceMax,
+    ReduceMin,
     ReduceMean,
+    ReduceProd,
+    ReduceSum,
     Reciprocal,
     Relu,
     Shape,
@@ -43,6 +47,7 @@ pub enum UnaryNodeKind {
     Sqrt,
     Tanh,
     Transpose,
+    Sign,
 }
 
 impl UnaryNodeKind {
@@ -55,12 +60,16 @@ impl UnaryNodeKind {
             Self::Flatten => "flatten",
             Self::Gelu => "gelu",
             Self::LeakyRelu => "leaky_relu",
+            Self::HardSigmoid => "hard_sigmoid",
             Self::Log => "log",
             Self::LogSoftmax => "log_softmax",
             Self::Neg => "neg",
             Self::Not => "not",
             Self::ReduceMax => "reduce_max",
+            Self::ReduceMin => "reduce_min",
             Self::ReduceMean => "reduce_mean",
+            Self::ReduceProd => "reduce_prod",
+            Self::ReduceSum => "reduce_sum",
             Self::Reciprocal => "reciprocal",
             Self::Relu => "relu",
             Self::Shape => "shape",
@@ -70,6 +79,7 @@ impl UnaryNodeKind {
             Self::Sqrt => "sqrt",
             Self::Tanh => "tanh",
             Self::Transpose => "transpose",
+            Self::Sign => "sign",
         }
     }
 }
@@ -108,12 +118,21 @@ impl<PS: PrecisionSettings> NodeCodegen<PS> for UnaryNode {
             _ => panic!("lhs must be a tensor or scalar"),
         };
 
-        // let input = scope.tensor_use_owned(&self.input, node_position);
         let output = &self.output.name();
         let function = (self.function)(input);
 
-        quote! {
-            let #output = #function;
+        match &self.output {
+            Type::Shape(ref shape_type) => {
+                let dim = shape_type.dim.to_tokens();
+                quote! {
+                    let #output: [usize;#dim] = #function.try_into().unwrap();
+                }
+            }
+            _ => {
+                quote! {
+                    let #output = #function;
+                }
+            }
         }
     }
 
@@ -126,9 +145,6 @@ impl<PS: PrecisionSettings> NodeCodegen<PS> for UnaryNode {
         match self.kind {
             UnaryNodeKind::Neg => {
                 imports.register("core::ops::Neg");
-            }
-            UnaryNodeKind::Shape => {
-                imports.register("burn::tensor::Int");
             }
             UnaryNodeKind::Not => {
                 imports.register("burn::tensor::Bool");
@@ -176,6 +192,14 @@ impl UnaryNode {
         Self::new(input, output, UnaryNodeKind::Sigmoid, Rc::new(function))
     }
 
+    pub(crate) fn hard_sigmoid(input: Type, output: Type, alpha: f64, beta: f64) -> Self {
+        let alpha = alpha.to_tokens();
+        let beta = beta.to_tokens();
+        let function =
+            move |input| quote! { burn::tensor::activation::hard_sigmoid(#input, #alpha, #beta) };
+        Self::new(input, output, UnaryNodeKind::HardSigmoid, Rc::new(function))
+    }
+
     pub(crate) fn log_softmax(input: Type, output: Type, dim: usize) -> Self {
         let dim = dim.to_tokens();
         let function = move |input| quote! { burn::tensor::activation::log_softmax(#input, #dim) };
@@ -198,8 +222,9 @@ impl UnaryNode {
         Self::new(input, output, UnaryNodeKind::Tanh, Rc::new(function))
     }
 
-    pub(crate) fn transpose(input: Type, output: Type) -> Self {
-        let function = move |input| quote! { #input.transpose() };
+    pub(crate) fn transpose(input: Type, output: Type, perm: Vec<i64>) -> Self {
+        let perm = perm.to_tokens();
+        let function = move |input| quote! { #input.permute(#perm) };
         Self::new(input, output, UnaryNodeKind::Transpose, Rc::new(function))
     }
 
@@ -326,6 +351,35 @@ impl UnaryNode {
         }
     }
 
+    pub(crate) fn reduce_min(input: Type, output: Type, dim: Option<usize>) -> Self {
+        if let Type::Tensor(ref tensor) = output {
+            if let Some(dim) = dim {
+                if tensor.kind == TensorKind::Bool {
+                    // Min is only implemented on numeric tensors
+                    panic!("ReduceMin is not supported for boolean");
+                }
+                // ReduceMin, keepdims=1, axes=[dim]
+                let dim = dim.to_tokens();
+                Self::new(
+                    input,
+                    output,
+                    UnaryNodeKind::ReduceMin,
+                    Rc::new(move |input| quote! { #input.min_dim(#dim) }),
+                )
+            } else {
+                // ReduceMin, keepdims=0, axes=None
+                Self::new(
+                    input,
+                    output,
+                    UnaryNodeKind::ReduceMin,
+                    Rc::new(move |input| quote! { #input.min() }),
+                )
+            }
+        } else {
+            panic!("ReduceMin only supports tensor output");
+        }
+    }
+
     pub(crate) fn reduce_mean(input: Type, output: Type, dim: Option<usize>) -> Self {
         // ReduceMean is constrained to numeric tensors, so no need to check for bool.
         if let Type::Tensor(_) = output {
@@ -352,20 +406,81 @@ impl UnaryNode {
         }
     }
 
+    pub(crate) fn reduce_prod(input: Type, output: Type, dim: Option<usize>) -> Self {
+        if let Type::Tensor(ref tensor) = output {
+            if let Some(dim) = dim {
+                if tensor.kind == TensorKind::Bool {
+                    // Prod is only implemented on numeric tensors
+                    panic!("ReduceProd is not supported for boolean");
+                }
+
+                // ReduceProd, keepdims=1, axes=[dim]
+                let dim = dim.to_tokens();
+                Self::new(
+                    input,
+                    output,
+                    UnaryNodeKind::ReduceProd,
+                    Rc::new(move |input| quote! { #input.prod_dim(#dim) }),
+                )
+            } else {
+                // ReduceProd, keepdims=0, axes=None
+                Self::new(
+                    input,
+                    output,
+                    UnaryNodeKind::ReduceProd,
+                    Rc::new(move |input| quote! { #input.prod() }),
+                )
+            }
+        } else {
+            panic!("ReduceProd only supports tensor output");
+        }
+    }
+
+    pub(crate) fn reduce_sum(input: Type, output: Type, dim: Option<usize>) -> Self {
+        if let Type::Tensor(ref tensor) = output {
+            if let Some(dim) = dim {
+                if tensor.kind == TensorKind::Bool {
+                    // Sum is only implemented on numeric tensors
+                    panic!("ReduceSum is not supported for boolean");
+                }
+
+                // ReduceSum, keepdims=1, axes=[dim]
+                let dim = dim.to_tokens();
+                Self::new(
+                    input,
+                    output,
+                    UnaryNodeKind::ReduceSum,
+                    Rc::new(move |input| quote! { #input.sum_dim(#dim) }),
+                )
+            } else {
+                // ReduceSum, keepdims=0, axes=None
+                Self::new(
+                    input,
+                    output,
+                    UnaryNodeKind::ReduceSum,
+                    Rc::new(move |input| quote! { #input.sum() }),
+                )
+            }
+        } else {
+            panic!("ReduceSum only supports tensor output");
+        }
+    }
+
     pub(crate) fn shape(input: Type, output: Type, start_dim: usize, end_dim: usize) -> Self {
-        // Shape as defined by the ONNX op should return a tensor because other ops
-        // (e.g., Gather) will be used on a tensor
+        let start_dim = start_dim.to_tokens();
+        let end_dim = end_dim.to_tokens();
+
         let function = move |input| {
             quote! {
-                Tensor::<B, 1, Int>::from_data(
-                    burn::tensor::Data::from(&#input.dims()[#start_dim..#end_dim])
-                        .from_usize::<i64>()
-                        .convert::<burn::tensor::ops::IntElem<B>>(),
-                    &#input.device(),
-                )
+                #input.dims()[#start_dim..#end_dim]
             }
         };
         Self::new(input, output, UnaryNodeKind::Shape, Rc::new(function))
+    }
+
+    pub(crate) fn sign(input: Type, output: Type) -> Self {
+        let function = move |input| quote! { #input.sign()};
+        Self::new(input, output, UnaryNodeKind::Sign, Rc::new(function))
     }
 }
 
@@ -373,7 +488,7 @@ impl UnaryNode {
 mod tests {
     use super::*;
     use crate::burn::node::tests::one_node_graph;
-    use crate::burn::{ScalarKind, ScalarType, TensorType};
+    use crate::burn::{ScalarKind, ScalarType, ShapeType, TensorType};
 
     #[test]
     fn test_unary_codegen_flatten() {
@@ -474,6 +589,27 @@ mod tests {
     }
 
     #[test]
+    fn test_unary_codegen_hard_sigmoid() {
+        one_node_graph(
+            UnaryNode::hard_sigmoid(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 4)),
+                0.2,
+                0.5,
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 4> {
+                    let tensor2 = burn::tensor::activation::hard_sigmoid(tensor1, 0.2, 0.5);
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+    }
+
+    #[test]
     fn test_unary_codegen_log_softmax() {
         one_node_graph(
             UnaryNode::log_softmax(
@@ -538,10 +674,11 @@ mod tests {
             UnaryNode::transpose(
                 Type::Tensor(TensorType::new_float("tensor1", 4)),
                 Type::Tensor(TensorType::new_float("tensor2", 4)),
+                vec![0, 3, 1, 2],
             ),
             quote! {
                 pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 4> {
-                    let tensor2 = tensor1.transpose();
+                    let tensor2 = tensor1.permute([0, 3, 1, 2]);
 
                     tensor2
                 }
@@ -589,6 +726,43 @@ mod tests {
     }
 
     #[test]
+    fn test_unary_codegen_reduce_min() {
+        one_node_graph(
+            UnaryNode::reduce_min(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 4)),
+                Some(1),
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 4> {
+                    let tensor2 = tensor1.min_dim(1);
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+
+        one_node_graph(
+            UnaryNode::reduce_min(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 1)),
+                None,
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 1> {
+                    let tensor2 = tensor1.min();
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+    }
+
+    #[test]
     fn test_unary_codegen_reduce_mean() {
         one_node_graph(
             UnaryNode::reduce_mean(
@@ -616,6 +790,80 @@ mod tests {
             quote! {
                 pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 1> {
                     let tensor2 = tensor1.mean();
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+    }
+
+    #[test]
+    fn test_unary_codegen_reduce_prod() {
+        one_node_graph(
+            UnaryNode::reduce_prod(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 4)),
+                Some(1),
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 4> {
+                    let tensor2 = tensor1.prod_dim(1);
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+
+        one_node_graph(
+            UnaryNode::reduce_prod(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 1)),
+                None,
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 1> {
+                    let tensor2 = tensor1.prod();
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+    }
+
+    #[test]
+    fn test_unary_codegen_reduce_sum() {
+        one_node_graph(
+            UnaryNode::reduce_sum(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 4)),
+                Some(1),
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 4> {
+                    let tensor2 = tensor1.sum_dim(1);
+
+                    tensor2
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["tensor2".to_string()],
+        );
+
+        one_node_graph(
+            UnaryNode::reduce_sum(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 1)),
+                None,
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 1> {
+                    let tensor2 = tensor1.sum();
 
                     tensor2
                 }
@@ -880,18 +1128,32 @@ mod tests {
         one_node_graph(
             UnaryNode::shape(
                 Type::Tensor(TensorType::new_float("tensor1", 4)),
-                Type::Tensor(TensorType::new_int("tensor2", 1)),
+                Type::Shape(ShapeType::new("shape1", 4)),
                 1,
                 3,
             ),
             quote! {
-                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 1, Int> {
-                    let tensor2 = Tensor::<B, 1, Int>::from_data(
-                        burn::tensor::Data::from(&tensor1.dims()[1usize..3usize])
-                            .from_usize::<i64>()
-                            .convert::<burn::tensor::ops::IntElem<B>>(),
-                        &tensor1.device(),
-                    );
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> [usize; 4] {
+                    let shape1: [usize; 4] = tensor1.dims()[1..3].try_into().unwrap();
+
+                    shape1
+                }
+            },
+            vec!["tensor1".to_string()],
+            vec!["shape1".to_string()],
+        );
+    }
+
+    #[test]
+    fn test_unary_sign_tensor() {
+        one_node_graph(
+            UnaryNode::sign(
+                Type::Tensor(TensorType::new_float("tensor1", 4)),
+                Type::Tensor(TensorType::new_float("tensor2", 4)),
+            ),
+            quote! {
+                pub fn forward(&self, tensor1: Tensor<B, 4>) -> Tensor<B, 4> {
+                    let tensor2 = tensor1.sign();
 
                     tensor2
                 }

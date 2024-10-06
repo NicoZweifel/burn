@@ -78,6 +78,8 @@ enum BackendValues {
     Wgpu,
     #[strum(to_string = "wgpu-fusion")]
     WgpuFusion,
+    #[strum(to_string = "cuda-jit")]
+    CudaJit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ValueEnum, Display, EnumIter)]
@@ -96,8 +98,20 @@ enum BenchmarkValues {
     Unary,
     #[strum(to_string = "max-pool2d")]
     MaxPool2d,
+    #[strum(to_string = "resnet50")]
+    Resnet50,
     #[strum(to_string = "load-record")]
     LoadRecord,
+    #[strum(to_string = "autodiff")]
+    Autodiff,
+    #[strum(to_string = "conv-transpose2d")]
+    ConvTranspose2d,
+    #[strum(to_string = "conv-transpose3d")]
+    ConvTranspose3d,
+    #[strum(to_string = "conv2d")]
+    Conv2d,
+    #[strum(to_string = "conv3d")]
+    Conv3d,
 }
 
 pub fn execute() {

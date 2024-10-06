@@ -1,12 +1,15 @@
 use backend_comparison::persistence::save;
 use burn::tensor::{backend::Backend, Distribution, Shape, Tensor};
-use burn_common::benchmark::{run_benchmark, Benchmark};
+use burn_common::{
+    benchmark::{run_benchmark, Benchmark},
+    sync_type::SyncType,
+};
 use derive_new::new;
 
 #[derive(new)]
 struct MatmulBenchmark<B: Backend, const D: usize> {
-    shape_lhs: Shape<D>,
-    shape_rhs: Shape<D>,
+    shape_lhs: Shape,
+    shape_rhs: Shape,
     device: B::Device,
 }
 
@@ -18,7 +21,7 @@ impl<B: Backend, const D: usize> Benchmark for MatmulBenchmark<B, D> {
     }
 
     fn shapes(&self) -> Vec<Vec<usize>> {
-        vec![self.shape_lhs.dims.into(), self.shape_rhs.dims.into()]
+        vec![self.shape_lhs.dims.clone(), self.shape_rhs.dims.clone()]
     }
 
     fn num_samples(&self) -> usize {
@@ -37,7 +40,7 @@ impl<B: Backend, const D: usize> Benchmark for MatmulBenchmark<B, D> {
     }
 
     fn sync(&self) {
-        B::sync(&self.device)
+        B::sync(&self.device, SyncType::Wait)
     }
 }
 
@@ -49,10 +52,10 @@ fn bench<B: Backend>(
     token: Option<&str>,
 ) {
     const D: usize = 3;
-    let batch_size = 3;
-    let m = 1024;
+    let batch_size = 8;
+    let m = 2048;
     let k = 2048;
-    let n = 1024;
+    let n = 2048;
     let shape_lhs = [batch_size, m, k].into();
     let shape_rhs = [batch_size, k, n].into();
 

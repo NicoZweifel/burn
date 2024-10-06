@@ -1,9 +1,11 @@
+use burn_tensor::repr::HandleContainer;
+
 use crate::{
     stream::{
         store::{ExecutionPlanId, ExecutionPlanStore, ExecutionStrategy},
-        OperationQueue,
+        OperationQueue, RelativeOps,
     },
-    FusionBackend, HandleContainer, Optimization,
+    FusionRuntime, Optimization,
 };
 
 /// The mode in which the execution is done.
@@ -13,13 +15,19 @@ pub(crate) enum ExecutionMode {
     Sync,
 }
 
-impl<B: FusionBackend> OperationQueue<B> {
+/// General trait to abstract how a single operation is executed.
+pub trait Operation<R: FusionRuntime>: Send + Sync {
+    /// Execute the operation.
+    fn execute(self: Box<Self>, handles: &mut HandleContainer<R::FusionHandle>);
+}
+
+impl<R: FusionRuntime> OperationQueue<R> {
     /// Execute the queue partially following the execution strategy from the plan.
     pub(crate) fn execute(
         &mut self,
         id: ExecutionPlanId,
-        handles: &mut HandleContainer<B>,
-        store: &mut ExecutionPlanStore<B::Optimization>,
+        handles: &mut HandleContainer<R::FusionHandle>,
+        store: &mut ExecutionPlanStore<R::Optimization>,
     ) {
         match &mut store.get_mut_unchecked(id).strategy {
             ExecutionStrategy::Optimization(optimization) => {
@@ -29,31 +37,36 @@ impl<B: FusionBackend> OperationQueue<B> {
         };
     }
 
+    /// Execute the optimization (fused operations) and remove all the corresponding
+    /// operations from the queue.
     fn execute_optimization(
         &mut self,
-        handles: &mut HandleContainer<B>,
-        optimization: &mut B::Optimization,
+        handles: &mut HandleContainer<R::FusionHandle>,
+        optimization: &mut R::Optimization,
     ) {
         let num_drained = optimization.len();
 
         let mut context = self.converter.context(handles);
         optimization.execute(&mut context);
 
-        self.drain_stream(num_drained, handles);
+        self.drain_queue(num_drained, handles);
         self.operations.drain(0..num_drained);
     }
 
-    fn execute_operations(&mut self, handles: &mut HandleContainer<B>) {
+    /// Execute all the operations in the [`OperationQueue`] sequentially
+    /// without applying any optimization.
+    fn execute_operations(&mut self, handles: &mut HandleContainer<R::FusionHandle>) {
         let num_drained = self.operations.len();
 
-        for operation in self.operations.drain(0..num_drained) {
+        for operation in self.operations.drain(..) {
             operation.execute(handles);
         }
 
-        self.drain_stream(num_drained, handles);
+        self.drain_queue(num_drained, handles);
     }
 
-    fn drain_stream(&mut self, num_drained: usize, handles: &mut HandleContainer<B>) {
+    /// Bookkeeping after executing `num_drained` operations from the queue.
+    fn drain_queue(&mut self, num_drained: usize, handles: &mut HandleContainer<R::FusionHandle>) {
         self.global[0..num_drained]
             .iter()
             .flat_map(|desc| desc.nodes())

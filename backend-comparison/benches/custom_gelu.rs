@@ -2,6 +2,7 @@ use backend_comparison::persistence::save;
 use burn::backend::Autodiff;
 use burn::tensor::{backend::Backend, Distribution, Shape, Tensor};
 use burn_common::benchmark::{run_benchmark, Benchmark};
+use burn_common::sync_type::SyncType;
 use core::f64::consts::SQRT_2;
 use derive_new::new;
 
@@ -16,7 +17,7 @@ enum GeluKind {
 /// operations.
 #[derive(new)]
 struct CustomGeluBenchmark<B: Backend, const D: usize> {
-    shape: Shape<D>,
+    shape: Shape,
     device: B::Device,
     kind: GeluKind,
     autodiff: bool,
@@ -37,7 +38,7 @@ impl<B: Backend, const D: usize> Benchmark for CustomGeluBenchmark<B, D> {
     }
 
     fn shapes(&self) -> Vec<Vec<usize>> {
-        vec![self.shape.dims.into()]
+        vec![self.shape.dims.clone()]
     }
 
     fn execute(&self, tensor: Self::Args) {
@@ -68,7 +69,7 @@ impl<B: Backend, const D: usize> Benchmark for CustomGeluBenchmark<B, D> {
     }
 
     fn sync(&self) {
-        B::sync(&self.device)
+        B::sync(&self.device, SyncType::Wait)
     }
 
     fn num_samples(&self) -> usize {
@@ -120,7 +121,7 @@ fn bench<B: Backend>(
     token: Option<&str>,
 ) {
     const D: usize = 3;
-    let shape: Shape<D> = [32, 512, 2048].into();
+    let shape: Shape = [32, 512, 2048].into();
 
     let run = |autodiff: bool| {
         let reference_gelu = CustomGeluBenchmark::<B, D>::new(

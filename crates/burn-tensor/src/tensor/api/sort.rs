@@ -3,9 +3,10 @@ use core::cmp::Ordering;
 use crate::{
     backend::Backend,
     ops::{IntElem, IntTensor},
-    BasicOps, Data, Device, Element, ElementComparison, ElementConversion, TensorKind,
+    BasicOps, Device, Element, ElementComparison, ElementConversion, TensorData, TensorKind,
 };
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
+use burn_common::reader::try_read_sync;
 
 /// Sort the elements of the input `tensor` by value along a given dimension.
 ///
@@ -27,72 +28,35 @@ use alloc::vec::Vec;
 /// Ideally, it is supposed to be implemented by the backend and the backend implementation will be resolved
 /// by static dispatch. It is not designed for direct usage by users, and not recommended to import
 /// or use this function directly.
-#[cfg(any(feature = "wasm-sync", not(target_family = "wasm")))]
-pub fn sort<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    tensor: K::Primitive<D>,
+pub fn sort<B: Backend, K: TensorKind<B> + BasicOps<B>>(
+    tensor: K::Primitive,
     dim: usize,
     descending: bool,
-) -> K::Primitive<D>
+) -> K::Primitive
 where
     <K as BasicOps<B>>::Elem: Element,
 {
     let device = K::device(&tensor);
-    let data = K::into_data(tensor).read();
-
-    sort_data::<B, D, K>(data, dim, &device, descending)
+    let data = try_read_sync(K::into_data_async(tensor)).expect("Failed to synchonously read tensor data. This operation is not supported until this backend has a GPU sorting implementation.");
+    sort_data::<B, K>(data, dim, &device, descending)
 }
 
-/// Sort the elements of the input `tensor` by value along a given dimension.
-///
-/// This sort is unstable (i.e., may reorder equal elements).
-///
-/// # Arguments
-///
-/// * `tensor` - The input tensor.
-/// * `dim` - The axis along which to sort.
-/// * `descending` - The sorting order.
-///
-/// # Returns
-///
-/// A tensor with the same shape as the input tensor, where the elements are sorted by value.
-///
-/// # Remarks
-///
-/// This is a fallback solution that used only when the backend doesn't have the corresponding implementation.
-/// Ideally, it is supposed to be implemented by the backend and the backend implementation will be resolved
-/// by static dispatch. It is not designed for direct usage by users, and not recommended to import
-/// or use this function directly.
-#[cfg(all(not(feature = "wasm-sync"), target_family = "wasm"))]
-pub async fn sort<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    tensor: K::Primitive<D>,
-    dim: usize,
-    descending: bool,
-) -> K::Primitive<D>
-where
-    <K as BasicOps<B>>::Elem: Element,
-{
-    let device = K::device(&tensor);
-    let data = K::into_data(tensor).read().await;
-
-    sort_data::<B, D, K>(data, dim, &device, descending)
-}
-
-pub fn sort_data<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    mut data: Data<<K as BasicOps<B>>::Elem, D>,
+pub fn sort_data<B: Backend, K: TensorKind<B> + BasicOps<B>>(
+    mut data: TensorData,
     dim: usize,
     device: &Device<B>,
     descending: bool,
-) -> K::Primitive<D>
+) -> K::Primitive
 where
     <K as BasicOps<B>>::Elem: Element,
 {
-    let dims = data.shape.dims;
-    if D == 1 {
+    let dims = data.shape.clone();
+    let data_slice = data.as_mut_slice().unwrap();
+    if dims.len() == 1 {
         // 1D sort
-        data.value
-            .sort_unstable_by(|&a, &b| compare(&a, &b, descending));
+        data_slice.sort_unstable_by(|&a, &b| compare(&a, &b, descending));
     } else {
-        sort_slice::<B, D, K>(&mut data.value, &dims, dim, None, false, descending);
+        sort_slice::<B, K>(data_slice, &dims, dim, None, false, descending);
     }
 
     K::from_data(data, device)
@@ -119,74 +83,37 @@ where
 /// Ideally, it is supposed to be implemented by the backend and the backend implementation will be resolved
 /// by static dispatch. It is not designed for direct usage by users, and not recommended to import
 /// or use this function directly.
-#[cfg(any(feature = "wasm-sync", not(target_family = "wasm")))]
-pub fn sort_with_indices<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    tensor: K::Primitive<D>,
+pub fn sort_with_indices<B: Backend, K: TensorKind<B> + BasicOps<B>>(
+    tensor: K::Primitive,
     dim: usize,
     descending: bool,
-) -> (K::Primitive<D>, IntTensor<B, D>)
+) -> (K::Primitive, IntTensor<B>)
 where
     <K as BasicOps<B>>::Elem: Element,
 {
     let device = K::device(&tensor);
-    let data = K::into_data(tensor).read();
-
-    sort_data_with_indices::<B, D, K>(data, dim, &device, descending)
+    let data = try_read_sync(K::into_data_async(tensor)).expect("Failed to synchonously read tensor data. This operation is not supported until this backend has a GPU sorting implementation.");
+    sort_data_with_indices::<B, K>(data, dim, &device, descending)
 }
 
-/// Sort the elements of the input `tensor` by value along a given dimension.
-///
-/// This sort is unstable (i.e., may reorder equal elements).
-///
-/// # Arguments
-///
-/// * `tensor` - The input tensor.
-/// * `dim` - The axis along which to sort.
-/// * `descending` - The sorting order.
-///
-/// # Returns
-///
-/// A tensor with the same shape as the input tensor and corresponding indices, where
-/// the elements are sorted by value and the indices map back to the original input tensor.
-///
-/// # Remarks
-///
-/// This is a fallback solution that used only when the backend doesn't have the corresponding implementation.
-/// Ideally, it is supposed to be implemented by the backend and the backend implementation will be resolved
-/// by static dispatch. It is not designed for direct usage by users, and not recommended to import
-/// or use this function directly.
-#[cfg(all(not(feature = "wasm-sync"), target_family = "wasm"))]
-pub async fn sort_with_indices<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    tensor: K::Primitive<D>,
-    dim: usize,
-    descending: bool,
-) -> (K::Primitive<D>, IntTensor<B, D>)
-where
-    <K as BasicOps<B>>::Elem: Element,
-{
-    let device = K::device(&tensor);
-    let data = K::into_data(tensor).read().await;
-
-    sort_data_with_indices::<B, D, K>(data, dim, &device, descending)
-}
-
-fn sort_data_with_indices<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    mut data: Data<<K as BasicOps<B>>::Elem, D>,
+fn sort_data_with_indices<B: Backend, K: TensorKind<B> + BasicOps<B>>(
+    mut data: TensorData,
     dim: usize,
     device: &Device<B>,
     descending: bool,
-) -> (K::Primitive<D>, IntTensor<B, D>)
+) -> (K::Primitive, IntTensor<B>)
 where
     <K as BasicOps<B>>::Elem: Element,
 {
-    let dims = data.shape.dims;
-    let mut indices_data = dim_indices::<B, D>(&dims, dim);
-    if D == 1 {
+    let dims = data.shape.clone();
+    let mut indices_data = dim_indices::<B>(&dims, dim);
+    let data_slice = data.as_mut_slice().unwrap();
+    if dims.len() == 1 {
         // 1D sort
         indices_data.sort_unstable_by(|&a, &b| {
             compare(
-                &data.value[a.elem::<i64>() as usize],
-                &data.value[b.elem::<i64>() as usize],
+                &data_slice[a.elem::<i64>() as usize],
+                &data_slice[b.elem::<i64>() as usize],
                 descending,
             )
         });
@@ -209,14 +136,14 @@ where
                     }
 
                     // Permute data by indices
-                    data.value.swap(current_idx, target_idx);
+                    data_slice.swap(current_idx, target_idx);
                     current_idx = target_idx;
                 }
             }
         }
     } else {
-        sort_slice::<B, D, K>(
-            &mut data.value,
+        sort_slice::<B, K>(
+            data_slice,
             &dims,
             dim,
             Some(&mut indices_data),
@@ -228,7 +155,7 @@ where
     let shape = data.shape.clone();
     (
         K::from_data(data, device),
-        B::int_from_data(Data::new(indices_data, shape), device),
+        B::int_from_data(TensorData::new(indices_data, shape), device),
     )
 }
 
@@ -252,79 +179,44 @@ where
 /// Ideally, it is supposed to be implemented by the backend and the backend implementation will be resolved
 /// by static dispatch. It is not designed for direct usage by users, and not recommended to import
 /// or use this function directly.
-#[cfg(any(feature = "wasm-sync", not(target_family = "wasm")))]
-pub fn argsort<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    tensor: K::Primitive<D>,
+pub fn argsort<B: Backend, K: TensorKind<B> + BasicOps<B>>(
+    tensor: K::Primitive,
     dim: usize,
     descending: bool,
-) -> IntTensor<B, D>
+) -> IntTensor<B>
 where
     <K as BasicOps<B>>::Elem: Element,
 {
     let device = K::device(&tensor);
-    let data = K::into_data(tensor).read();
+    let data = try_read_sync(K::into_data_async(tensor)).expect("Failed to synchonously read tensor data. This operation is not supported until this backend has a GPU sorting implementation.");
 
-    argsort_data::<B, D, K>(data, dim, &device, descending)
+    argsort_data::<B, K>(data, dim, &device, descending)
 }
 
-/// Returns the indices that sort the elements of the input `tensor` along a given dimension.
-///
-/// This sort is unstable (i.e., may reorder equal elements).
-///
-/// # Arguments
-///
-/// * `tensor` - The input tensor.
-/// * `dim` - The axis along which to sort.
-/// * `descending` - The sorting order.
-///
-/// # Returns
-///
-/// A tensor with the same shape as the input tensor the indices map back to the original input tensor.
-///
-/// # Remarks
-///
-/// This is a fallback solution that used only when the backend doesn't have the corresponding implementation.
-/// Ideally, it is supposed to be implemented by the backend and the backend implementation will be resolved
-/// by static dispatch. It is not designed for direct usage by users, and not recommended to import
-/// or use this function directly.
-#[cfg(all(not(feature = "wasm-sync"), target_family = "wasm"))]
-pub async fn argsort<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    tensor: K::Primitive<D>,
-    dim: usize,
-    descending: bool,
-) -> IntTensor<B, D>
-where
-    <K as BasicOps<B>>::Elem: Element,
-{
-    let device = K::device(&tensor);
-    let data = K::into_data(tensor).read().await;
-
-    argsort_data::<B, D, K>(data, dim, &device, descending)
-}
-
-fn argsort_data<B: Backend, const D: usize, K: TensorKind<B> + BasicOps<B>>(
-    mut data: Data<<K as BasicOps<B>>::Elem, D>,
+fn argsort_data<B: Backend, K: TensorKind<B> + BasicOps<B>>(
+    mut data: TensorData,
     dim: usize,
     device: &Device<B>,
     descending: bool,
-) -> IntTensor<B, D>
+) -> IntTensor<B>
 where
     <K as BasicOps<B>>::Elem: Element,
 {
-    let dims = data.shape.dims;
-    let mut indices_data = dim_indices::<B, D>(&dims, dim);
-    if D == 1 {
+    let dims = data.shape.clone();
+    let mut indices_data = dim_indices::<B>(&dims, dim);
+    if dims.len() == 1 {
         // 1D sort
+        let slice = data.as_slice::<<K as BasicOps<B>>::Elem>().unwrap();
         indices_data.sort_unstable_by(|&a, &b| {
             compare(
-                &data.value[a.elem::<i64>() as usize],
-                &data.value[b.elem::<i64>() as usize],
+                &slice[a.elem::<i64>() as usize],
+                &slice[b.elem::<i64>() as usize],
                 descending,
             )
         });
     } else {
-        sort_slice::<B, D, K>(
-            &mut data.value,
+        sort_slice::<B, K>(
+            data.as_mut_slice().unwrap(),
             &dims,
             dim,
             Some(&mut indices_data),
@@ -333,7 +225,7 @@ where
         );
     }
 
-    B::int_from_data(Data::new(indices_data, data.shape), device)
+    B::int_from_data(TensorData::new(indices_data, data.shape), device)
 }
 
 /// Sort the elements by value along a given dimension.
@@ -343,9 +235,9 @@ where
 /// and if `permute_both` is enabled then the data is also sorted.
 ///
 /// This sort is unstable (i.e., may reorder equal elements).
-fn sort_slice<B: Backend, const D: usize, K: BasicOps<B>>(
+fn sort_slice<B: Backend, K: BasicOps<B>>(
     data: &mut [<K as BasicOps<B>>::Elem],
-    dims: &[usize; D],
+    dims: &[usize],
     dim: usize,
     mut indices: Option<&mut [IntElem<B>]>,
     permute_both: bool,
@@ -353,9 +245,10 @@ fn sort_slice<B: Backend, const D: usize, K: BasicOps<B>>(
 ) where
     <K as BasicOps<B>>::Elem: Element,
 {
+    let ndims = dims.len();
     let strides = compute_strides(dims);
     // Dimensions to access elements to sort
-    let mut sort_dims = *dims;
+    let mut sort_dims = dims.to_vec();
     sort_dims[dim] = 1;
     let strides_out = compute_strides(&sort_dims);
 
@@ -374,7 +267,7 @@ fn sort_slice<B: Backend, const D: usize, K: BasicOps<B>>(
         let mut index_offset = 0;
         let mut stride_dim = 0;
         let mut shape_dim = 0;
-        for d in 0..D {
+        for d in 0..ndims {
             let stride_input = strides[d];
             let stride_output = strides_out[d];
             let shape_output = sort_dims[d];
@@ -435,8 +328,8 @@ fn sort_slice<B: Backend, const D: usize, K: BasicOps<B>>(
 }
 
 /// Computes the steps for each dimension when traversing an array.
-fn compute_strides<const D: usize>(dims: &[usize; D]) -> [usize; D] {
-    let mut strides = [0; D];
+fn compute_strides(dims: &[usize]) -> Vec<usize> {
+    let mut strides = vec![0; dims.len()];
     let mut current = 1;
 
     dims.iter().enumerate().rev().for_each(|(index, val)| {
@@ -448,8 +341,8 @@ fn compute_strides<const D: usize>(dims: &[usize; D]) -> [usize; D] {
 }
 
 /// Generates the indices for each element along the specified dimension.
-fn dim_indices<B: Backend, const D: usize>(dims: &[usize; D], dim: usize) -> Vec<IntElem<B>> {
-    if D == 1 {
+fn dim_indices<B: Backend>(dims: &[usize], dim: usize) -> Vec<IntElem<B>> {
+    if dims.len() == 1 {
         (0..dims[dim])
             .map(|i| (i as i64).elem::<IntElem<B>>())
             .collect::<Vec<_>>()

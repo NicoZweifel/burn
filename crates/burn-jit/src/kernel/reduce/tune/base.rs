@@ -1,18 +1,21 @@
 use std::marker::PhantomData;
 
-use burn_compute::tune::{AutotuneOperation, AutotuneOperationSet};
 use burn_tensor::{Element, ElementConversion};
+use cubecl::tune::{local_tuner, AutotuneOperation, AutotuneOperationSet, LocalTuner};
 
 use crate::{
-    compute::JitAutotuneKey,
     element::JitElement,
     kernel::{
         prng::random_like_uniform,
-        reduce::{init_reduce_output, reduce_dim_naive, reduce_dim_shared, ReduceDimAlgorithm},
+        reduce::{
+            init_reduce_output, naive::shader::reduce_dim_naive, shared::shader::reduce_dim_shared,
+            ReduceDimAlgorithm,
+        },
     },
     ops::numeric::empty_device,
     tensor::JitTensor,
-    Runtime,
+    tune_key::JitAutotuneKey,
+    JitRuntime, JitTuneId,
 };
 
 use super::ReduceAutotuneKey;
@@ -22,21 +25,20 @@ use super::ReduceAutotuneKey;
 /// dim to reduce, and product of others
 pub(crate) struct ReduceDimAutotuneOperationSet<
     RD: ReduceDimAlgorithm<EI>,
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement,
     EO: JitElement,
-    const D: usize,
 > {
     key: JitAutotuneKey,
-    input: JitTensor<R, EI, D>,
-    output: JitTensor<R, EO, D>,
+    input: JitTensor<R, EI>,
+    output: JitTensor<R, EO>,
     reduce_dim: usize,
     _algorithm: PhantomData<RD>,
 }
-impl<RD: ReduceDimAlgorithm<EI>, R: Runtime, EI: JitElement, EO: JitElement, const D: usize>
-    ReduceDimAutotuneOperationSet<RD, R, EI, EO, D>
+impl<RD: ReduceDimAlgorithm<EI>, R: JitRuntime, EI: JitElement, EO: JitElement>
+    ReduceDimAutotuneOperationSet<RD, R, EI, EO>
 {
-    fn new(input: JitTensor<R, EI, D>, output: JitTensor<R, EO, D>, reduce_dim: usize) -> Self {
+    fn new(input: JitTensor<R, EI>, output: JitTensor<R, EO>, reduce_dim: usize) -> Self {
         Self {
             key: JitAutotuneKey::ReduceDim(ReduceAutotuneKey::new(
                 &input.shape,
@@ -51,10 +53,10 @@ impl<RD: ReduceDimAlgorithm<EI>, R: Runtime, EI: JitElement, EO: JitElement, con
     }
 }
 
-impl<RD: ReduceDimAlgorithm<EI>, R, EI, EO, const D: usize> AutotuneOperationSet<JitAutotuneKey>
-    for ReduceDimAutotuneOperationSet<RD, R, EI, EO, D>
+impl<RD: ReduceDimAlgorithm<EI>, R, EI, EO> AutotuneOperationSet<JitAutotuneKey>
+    for ReduceDimAutotuneOperationSet<RD, R, EI, EO>
 where
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement + Element,
     EO: JitElement + Element,
 {
@@ -66,19 +68,19 @@ where
         let random_bounds: (EI, EI) = ((-10.0).elem::<EI>(), (10.0).elem::<EI>());
         let input = random_like_uniform(&self.input, random_bounds.0, random_bounds.1);
 
-        let output: JitTensor<R, EO, D> = empty_device(
+        let output: JitTensor<R, EO> = empty_device(
             self.output.client.clone(),
             self.output.device.clone(),
             self.output.shape.clone(),
         );
 
         vec![
-            Box::new(ReduceDimNaiveAutotune::<RD, R, EI, EO, D>::new(
+            Box::new(ReduceDimNaiveAutotune::<RD, R, EI, EO>::new(
                 input.clone(),
                 output.clone(),
                 self.reduce_dim,
             )),
-            Box::new(ReduceDimSharedAutotune::<RD, R, EI, EO, D>::new(
+            Box::new(ReduceDimSharedAutotune::<RD, R, EI, EO>::new(
                 input.clone(),
                 output.clone(),
                 self.reduce_dim,
@@ -88,12 +90,12 @@ where
 
     fn fastest(self: Box<Self>, fastest_index: usize) -> Box<dyn AutotuneOperation> {
         match fastest_index {
-            0 => Box::new(ReduceDimNaiveAutotune::<RD, R, EI, EO, D>::new(
+            0 => Box::new(ReduceDimNaiveAutotune::<RD, R, EI, EO>::new(
                 self.input,
                 self.output,
                 self.reduce_dim,
             )),
-            1 => Box::new(ReduceDimSharedAutotune::<RD, R, EI, EO, D>::new(
+            1 => Box::new(ReduceDimSharedAutotune::<RD, R, EI, EO>::new(
                 self.input,
                 self.output,
                 self.reduce_dim,
@@ -106,25 +108,27 @@ where
 /// Executes autotune on reduce_dim operation
 pub(crate) fn reduce_dim_autotune<
     RD: ReduceDimAlgorithm<EI>,
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement + Element,
     EO: JitElement + Element,
-    const D: usize,
 >(
-    input: JitTensor<R, EI, D>,
+    input: JitTensor<R, EI>,
     reduce_dim: usize,
-) -> JitTensor<R, EO, D> {
+) -> JitTensor<R, EO> {
     let client = input.client.clone();
 
     let output = init_reduce_output(&input, reduce_dim);
+    let id = JitTuneId::new::<R>(&input.device);
 
-    let operation_set = Box::new(ReduceDimAutotuneOperationSet::<RD, R, EI, EO, D>::new(
+    let operation_set = Box::new(ReduceDimAutotuneOperationSet::<RD, R, EI, EO>::new(
         input,
         output.clone(),
         reduce_dim,
     ));
 
-    client.autotune_execute(operation_set);
+    static TUNER: LocalTuner<JitAutotuneKey, JitTuneId> = local_tuner!();
+
+    TUNER.execute(&id, &client, operation_set);
 
     output
 }
@@ -133,27 +137,26 @@ pub(crate) fn reduce_dim_autotune<
 // Probably better on balanced tensor shapes
 pub(crate) struct ReduceDimNaiveAutotune<
     RD: ReduceDimAlgorithm<EI>,
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement,
     EO: JitElement,
-    const D: usize,
 > {
-    input: JitTensor<R, EI, D>,
-    output: JitTensor<R, EO, D>,
+    input: JitTensor<R, EI>,
+    output: JitTensor<R, EO>,
     reduce_dim: usize,
     _algorithm: PhantomData<RD>,
 }
 
-impl<RD, R, EI, EO, const D: usize> AutotuneOperation for ReduceDimNaiveAutotune<RD, R, EI, EO, D>
+impl<RD, R, EI, EO> AutotuneOperation for ReduceDimNaiveAutotune<RD, R, EI, EO>
 where
     RD: ReduceDimAlgorithm<EI>,
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement,
     EO: JitElement,
 {
     fn execute(self: Box<Self>) {
         #[allow(clippy::redundant_closure_call)]
-        reduce_dim_naive::<RD, R, EI, EO, D>(self.input, self.output, self.reduce_dim);
+        reduce_dim_naive::<RD, R, EI, EO>(self.input, self.output, self.reduce_dim);
     }
 
     fn clone(&self) -> Box<dyn AutotuneOperation> {
@@ -170,27 +173,26 @@ where
 // Probably better on tensors large along reduce dim
 pub(crate) struct ReduceDimSharedAutotune<
     RD: ReduceDimAlgorithm<EI>,
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement,
     EO: JitElement,
-    const D: usize,
 > {
-    input: JitTensor<R, EI, D>,
-    output: JitTensor<R, EO, D>,
+    input: JitTensor<R, EI>,
+    output: JitTensor<R, EO>,
     reduce_dim: usize,
     _algorithm: PhantomData<RD>,
 }
 
-impl<RD, R, EI, EO, const D: usize> AutotuneOperation for ReduceDimSharedAutotune<RD, R, EI, EO, D>
+impl<RD, R, EI, EO> AutotuneOperation for ReduceDimSharedAutotune<RD, R, EI, EO>
 where
     RD: ReduceDimAlgorithm<EI>,
-    R: Runtime,
+    R: JitRuntime,
     EI: JitElement,
     EO: JitElement,
 {
     fn execute(self: Box<Self>) {
         #[allow(clippy::redundant_closure_call)]
-        reduce_dim_shared::<RD, R, EI, EO, D>(self.input, self.output, self.reduce_dim);
+        reduce_dim_shared::<RD, R, EI, EO>(self.input, self.output, self.reduce_dim);
     }
 
     fn clone(&self) -> Box<dyn AutotuneOperation> {

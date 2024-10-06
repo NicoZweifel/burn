@@ -1,10 +1,5 @@
-use crate::{
-    compute::{CompiledKernel, LaunchSettings, WorkGroup},
-    element::JitElement,
-    gpu::WorkgroupSize,
-    tensor::JitTensor,
-    Runtime,
-};
+use crate::{element::JitElement, tensor::JitTensor, JitRuntime};
+use cubecl::{prelude::*, ExecutionMode, KernelId};
 
 use super::SourceTemplate;
 
@@ -12,66 +7,48 @@ use super::SourceTemplate;
 pub trait KernelSource: Send + 'static + Sync {
     /// Convert to [source](SourceTemplate)
     fn source(&self) -> SourceTemplate;
-}
-
-/// Kernel trait with the [source](SourceTemplate) that will be compiled and cached based on the
-/// provided id.
-///
-/// The kernel will be launched with the given [launch settings](LaunchSettings)
-pub trait TemplateKernel: 'static + Send + Sync {
-    /// Convert to source
-    fn compile(&self) -> CompiledKernel;
     /// Identifier for the kernel, used for caching kernel compilation.
-    fn id(&self) -> String;
-    /// Launch information.
-    fn launch_settings(&self) -> LaunchSettings;
+    fn id(&self) -> KernelId;
 }
 
 #[derive(new)]
-/// Wraps a [kernel source](KernelSource) into a [template kernel](TemplateKernel) with launch
-/// information.
+/// Wraps a [kernel source](KernelSource) into a [cube task](CubeTask).
 pub struct SourceKernel<K> {
     kernel_source: K,
-    workgroup: WorkGroup,
-    workgroup_size: WorkgroupSize,
+    cube_dim: CubeDim,
 }
 
-impl<K> TemplateKernel for SourceKernel<K>
-where
-    K: KernelSource + 'static,
-{
-    fn compile(&self) -> CompiledKernel {
+impl<K: KernelSource> CubeTask for SourceKernel<K> {
+    fn compile(&self, _mode: ExecutionMode) -> CompiledKernel {
         let source_template = self.kernel_source.source();
         let source = source_template.complete();
+
         CompiledKernel {
+            name: Some(core::any::type_name::<K>()),
             source,
-            workgroup_size: self.workgroup_size,
+            cube_dim: self.cube_dim,
+            shared_mem_bytes: 0,
+            debug_info: None,
         }
     }
 
-    fn id(&self) -> String {
-        format!("{:?}", core::any::TypeId::of::<K>())
-    }
-
-    fn launch_settings(&self) -> LaunchSettings {
-        LaunchSettings {
-            workgroup: self.workgroup.clone(),
-        }
+    fn id(&self) -> cubecl::KernelId {
+        self.kernel_source.id()
     }
 }
 
 /// Generates kernel source code by replacing some information using templating.
 #[macro_export]
-macro_rules! kernel_wgsl {
+macro_rules! kernel_source {
     (
         $struct:ident,
         $file:expr
     ) => {
-        /// Generated kernel from wgsl file.
+        /// Generated kernel from a source file.
         #[derive(new)]
         pub struct $struct;
 
-        impl $crate::template::KernelSource for $struct {
+        impl $struct {
             fn source(&self) -> $crate::template::SourceTemplate {
                 $crate::template::SourceTemplate::new(include_str!($file))
             }
@@ -92,21 +69,20 @@ macro_rules! kernel_wgsl {
 /// |     (D + 1)..(2 * D + 1) | rhs strides |
 /// | (2 * D + 1)..(3 * D + 1) | lhs shape   |
 /// | (3 * D + 1)..(4 * D + 1) | rhs shape   |
-pub fn build_info<R: Runtime, E: JitElement, const D: usize>(
-    tensors: &[&JitTensor<R, E, D>],
-) -> Vec<u32> {
-    let mut info: Vec<u32> = vec![0; tensors.len() * 2 * D + 1];
-    info[0] = D as u32;
+pub fn build_info<R: JitRuntime, E: JitElement>(tensors: &[&JitTensor<R, E>]) -> Vec<u32> {
+    let ndims = tensors[0].shape.num_dims();
+    let mut info: Vec<u32> = vec![0; tensors.len() * 2 * ndims + 1];
+    info[0] = ndims as u32;
 
     let mut current = 1;
     for tensor in tensors.iter() {
-        for d in 0..D {
+        for d in 0..ndims {
             info[current] = tensor.strides[d] as u32;
             current += 1;
         }
     }
     for tensor in tensors.iter() {
-        for d in 0..D {
+        for d in 0..ndims {
             info[current] = tensor.shape.dims[d] as u32;
             current += 1;
         }

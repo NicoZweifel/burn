@@ -4,7 +4,7 @@ mod tests {
     use burn_tensor::{module, Distribution, Tensor};
 
     #[test]
-    pub fn max_pool2d_should_work_with_multiple_invocations() {
+    pub fn max_pool2d_should_match_reference_backends() {
         let tensor = Tensor::<TestBackend, 4>::random(
             [32, 32, 32, 32],
             Distribution::Default,
@@ -26,7 +26,7 @@ mod tests {
     }
 
     #[test]
-    pub fn max_pool2d_with_indices_should_work_with_multiple_invocations() {
+    pub fn max_pool2d_with_indices_should_match_reference_backend() {
         let tensor = Tensor::<TestBackend, 4>::random(
             [32, 32, 32, 32],
             Distribution::Default,
@@ -47,6 +47,8 @@ mod tests {
         pooled
             .into_data()
             .assert_approx_eq(&pooled_ref.into_data(), 3);
-        assert_eq!(indices.into_data(), indices_ref.into_data().convert());
+        indices
+            .into_data()
+            .assert_eq(&indices_ref.into_data(), false);
     }
 }

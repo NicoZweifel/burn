@@ -1,14 +1,15 @@
+use burn_common::{iter_range_par, run_par};
 use burn_tensor::ElementConversion;
 use ndarray::Array4;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::{iter_range_par, run_par, FloatNdArrayElement, NdArrayTensor, UnsafeSharedRef};
+use crate::{FloatNdArrayElement, NdArrayTensor, UnsafeSharedRef};
 
 pub(crate) fn nearest_interpolate<E: FloatNdArrayElement>(
-    x: NdArrayTensor<E, 4>,
+    x: NdArrayTensor<E>,
     output_size: [usize; 2],
-) -> NdArrayTensor<E, 4> {
+) -> NdArrayTensor<E> {
     let x = x.array.into_dimensionality::<ndarray::Ix4>().unwrap();
 
     let (batch_size, channels, in_height, in_width) = x.dim();
@@ -50,11 +51,11 @@ pub(crate) fn nearest_interpolate<E: FloatNdArrayElement>(
 }
 
 pub(crate) fn nearest_interpolate_backward<E: FloatNdArrayElement>(
-    x: NdArrayTensor<E, 4>,
-    grad: NdArrayTensor<E, 4>,
+    x: NdArrayTensor<E>,
+    grad: NdArrayTensor<E>,
     output_size: [usize; 2],
-) -> NdArrayTensor<E, 4> {
-    let [batch_size, channels, input_height, input_width] = x.shape().dims;
+) -> NdArrayTensor<E> {
+    let [batch_size, channels, input_height, input_width] = x.shape().dims();
     let [output_height, output_width] = output_size;
 
     let mut output_grad =
@@ -87,16 +88,16 @@ fn start_index(output_size_index: usize, output_size: usize, input_size: usize) 
 }
 
 pub(crate) fn bilinear_interpolate<E: FloatNdArrayElement>(
-    x: NdArrayTensor<E, 4>,
+    x: NdArrayTensor<E>,
     output_size: [usize; 2],
-) -> NdArrayTensor<E, 4> {
+) -> NdArrayTensor<E> {
     let x = x.array.into_dimensionality::<ndarray::Ix4>().unwrap();
 
     let (batch_size, channels, in_height, in_width) = x.dim();
     let [out_height, out_width] = output_size;
 
-    let y_ratio = ((in_height - 1) as f64) / ((out_height - 1) as f64);
-    let x_ratio = ((in_width - 1) as f64) / ((out_width - 1) as f64);
+    let y_ratio = ((in_height - 1) as f64) / (core::cmp::max(out_height - 1, 1) as f64);
+    let x_ratio = ((in_width - 1) as f64) / (core::cmp::max(out_width - 1, 1) as f64);
 
     let out_element_num = batch_size * channels * out_height * out_width;
     let strides = (
@@ -146,9 +147,9 @@ pub(crate) fn bilinear_interpolate<E: FloatNdArrayElement>(
 }
 
 pub(crate) fn bicubic_interpolate<E: FloatNdArrayElement>(
-    x: NdArrayTensor<E, 4>,
+    x: NdArrayTensor<E>,
     output_size: [usize; 2],
-) -> NdArrayTensor<E, 4> {
+) -> NdArrayTensor<E> {
     fn cubic_interp1d(x0: f64, x1: f64, x2: f64, x3: f64, t: f64) -> f64 {
         fn cubic_convolution1(x: f64, a: f64) -> f64 {
             ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
@@ -173,8 +174,8 @@ pub(crate) fn bicubic_interpolate<E: FloatNdArrayElement>(
     let (batch_size, channels, in_height, in_width) = x.dim();
     let [out_height, out_width] = output_size;
 
-    let y_ratio = ((in_height - 1) as f64) / ((out_height - 1) as f64);
-    let x_ratio = ((in_width - 1) as f64) / ((out_width - 1) as f64);
+    let y_ratio = ((in_height - 1) as f64) / (core::cmp::max(out_height - 1, 1) as f64);
+    let x_ratio = ((in_width - 1) as f64) / (core::cmp::max(out_width - 1, 1) as f64);
 
     let out_element_num = batch_size * channels * out_height * out_width;
     let strides = (

@@ -15,10 +15,13 @@ mod checkpoint;
 mod complex;
 mod conv1d;
 mod conv2d;
+mod conv3d;
 mod conv_transpose1d;
 mod conv_transpose2d;
+mod conv_transpose3d;
 mod cos;
 mod cross_entropy;
+mod deform_conv2d;
 mod div;
 mod erf;
 mod exp;
@@ -35,6 +38,7 @@ mod matmul;
 mod maxmin;
 mod maxpool1d;
 mod maxpool2d;
+mod memory_management;
 mod mul;
 mod multithread;
 mod nearest_interpolate;
@@ -44,7 +48,7 @@ mod permute;
 mod pow;
 mod recip;
 mod relu;
-mod repeat;
+mod repeat_dim;
 mod reshape;
 mod select;
 mod sigmoid;
@@ -69,6 +73,7 @@ macro_rules! testgen_all {
         burn_autodiff::testgen_gradients!();
         burn_autodiff::testgen_bridge!();
         burn_autodiff::testgen_checkpoint!();
+        burn_autodiff::testgen_memory_management!();
 
         // Activation
         burn_autodiff::testgen_ad_relu!();
@@ -77,8 +82,12 @@ macro_rules! testgen_all {
         // Modules
         burn_autodiff::testgen_ad_conv1d!();
         burn_autodiff::testgen_ad_conv2d!();
+        burn_autodiff::testgen_ad_conv3d!();
+        #[cfg(not(target_os = "macos"))] // Wgpu on MacOS currently doesn't support atomic compare exchange
+        burn_autodiff::testgen_ad_deform_conv2d!();
         burn_autodiff::testgen_ad_conv_transpose1d!();
         burn_autodiff::testgen_ad_conv_transpose2d!();
+        burn_autodiff::testgen_ad_conv_transpose3d!();
         burn_autodiff::testgen_ad_max_pool1d!();
         burn_autodiff::testgen_ad_max_pool2d!();
         burn_autodiff::testgen_ad_avg_pool1d!();
@@ -127,6 +136,6 @@ macro_rules! testgen_all {
         burn_autodiff::testgen_ad_sign!();
         burn_autodiff::testgen_ad_expand!();
         burn_autodiff::testgen_ad_sort!();
-        burn_autodiff::testgen_ad_repeat!();
+        burn_autodiff::testgen_ad_repeat_dim!();
     };
 }

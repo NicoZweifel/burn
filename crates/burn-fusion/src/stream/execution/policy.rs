@@ -1,13 +1,12 @@
+use burn_tensor::repr::OperationDescription;
+
 use super::validator::{
     ExecutionPlanOperationsStore, TriggerOperationsStore, TriggerProgress, TriggerValidator,
     ValidatorState,
 };
 use super::ExecutionMode;
 use crate::stream::execution::validator::OperationsValidator;
-use crate::stream::{
-    store::{ExecutionPlanId, ExecutionPlanStore, ExecutionTrigger, SearchQuery},
-    OperationDescription,
-};
+use crate::stream::store::{ExecutionPlanId, ExecutionPlanStore, ExecutionTrigger, SearchQuery};
 use std::marker::PhantomData;
 
 /// The policy keeps track of all possible execution plans for the current operations.
@@ -21,9 +20,15 @@ use std::marker::PhantomData;
 /// execution plans scales with the number of concurrent potential plans for the current operations,
 /// which isn't supposed to be big at any time.
 pub(crate) struct Policy<O> {
+    /// List of potential execution plans that are compatible with current stream segment
     candidates: Vec<OperationsValidator<ExecutionPlanId>>,
+    /// List of candidate execution plans that have been found; we can still keep searching
+    /// to potentially find a better one.
     availables: Vec<AvailableItem>,
+    /// The found execution plan that should be executed, along with the number of operations
+    /// in the plan.
     found: Option<(ExecutionPlanId, usize)>,
+    /// The number of operations that have been analyzed
     num_operations: usize,
     _item_type: PhantomData<O>,
 }
@@ -40,7 +45,7 @@ struct AvailableItem {
 pub enum Action {
     /// Continue exploring using the [builder](crate::OptimizationBuilder).
     Explore,
-    /// The current policy indicates that an explocation may be possible in the future, so the
+    /// The current policy indicates that an exploration may be possible in the future, so the
     /// best action is to defer any execution.
     ///
     /// Sometimes, it can be a false positive and a new exploration should be built from scratch.
@@ -86,6 +91,7 @@ impl<O> Policy<O> {
 
     /// Update the policy state.
     pub fn update(&mut self, store: &ExecutionPlanStore<O>, operation: &OperationDescription) {
+        // reset the candidates to contain all execution plans starting with the operation.
         if self.num_operations == 0 {
             self.candidates = store
                 .find(SearchQuery::PlansStartingWith(operation))
@@ -111,6 +117,8 @@ impl<O> Policy<O> {
         self.found = None;
     }
 
+    /// Check which candidates can be removed, and which one can go from
+    /// 'candidate' to 'available'
     fn check_candidates(&mut self, store: &ExecutionPlanStore<O>) {
         let mut candidates_to_remove = Vec::new();
 
@@ -266,14 +274,16 @@ impl<O> Policy<O> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        stream::{
-            store::{ExecutionPlan, ExecutionStrategy, ExecutionTrigger},
-            FloatOperationDescription, UnaryOperationDescription,
+    use burn_tensor::{
+        repr::{
+            FloatOperationDescription, TensorDescription, TensorId, TensorStatus,
+            UnaryOperationDescription,
         },
-        TensorDescription, TensorId, TensorStatus,
+        DType,
     };
+
+    use super::*;
+    use crate::stream::store::{ExecutionPlan, ExecutionStrategy, ExecutionTrigger};
     use std::ops::Range;
 
     #[test]
@@ -548,10 +558,10 @@ mod tests {
             // Out node.
             self.new_empty_node(out_id);
 
-            self.operations
-                .push(OperationDescription::Float(FloatOperationDescription::Log(
-                    self.unary_description(),
-                )));
+            self.operations.push(OperationDescription::Float(
+                DType::F32,
+                FloatOperationDescription::Log(self.unary_description()),
+            ));
         }
 
         fn new_empty_node(&mut self, id: u64) {
@@ -559,6 +569,7 @@ mod tests {
                 id: TensorId::new(id),
                 shape: vec![32, 32, 1],
                 status: TensorStatus::NotInit,
+                dtype: DType::F32,
             });
         }
 

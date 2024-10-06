@@ -13,7 +13,7 @@ use serde::{
     ser::{SerializeMap, SerializeTuple},
     Serialize,
 };
-use std::{any::type_name, collections::HashMap, path::PathBuf};
+use std::{any::type_name, collections::HashMap, marker::PhantomData, path::PathBuf};
 
 /// Type of the record to be saved.
 #[derive(Debug, Clone, Default, Copy)]
@@ -46,6 +46,7 @@ pub struct BurnGraph<PS: PrecisionSettings> {
     blank_spaces: bool,
     graph_input_types: Vec<Type>,
     graph_output_types: Vec<Type>,
+    _ps: PhantomData<PS>,
 }
 
 // The backend used for recording.
@@ -291,6 +292,7 @@ impl<PS: PrecisionSettings> BurnGraph<PS> {
                 Type::Tensor(tensor) => Some(tensor),
                 Type::Scalar(_) => None,
                 Type::Other(_) => None,
+                Type::Shape(_) => None,
             }
         }
 
@@ -312,21 +314,17 @@ impl<PS: PrecisionSettings> BurnGraph<PS> {
                     .flat_map(to_tensor)
                     .for_each(|tensor| {
                         self.scope
-                            .tensor_register_variable(&tensor, node_position + 1)
-                    })
-            });
-
-        self.nodes
-            .iter()
-            .enumerate()
-            .for_each(|(node_position, node)| {
+                            .tensor_register_variable(&tensor, node_position + 1);
+                    });
+                // Since the graph is guaranteed to be a DAG, we can safely register future uses
+                // of the inputs (which are the previous nodes' outputs)
                 node.input_types()
                     .into_iter()
                     .flat_map(to_tensor)
                     .for_each(|tensor| {
                         self.scope
                             .tensor_register_future_use(&tensor, node_position)
-                    })
+                    });
             });
     }
 
@@ -414,6 +412,7 @@ impl<PS: PrecisionSettings> BurnGraph<PS> {
         // Extend with phantom data to avoid unused generic type.
         body.extend(quote! {
             phantom: core::marker::PhantomData<B>,
+            device: burn::module::Ignored<B::Device>,
         });
 
         quote! {
@@ -447,6 +446,7 @@ impl<PS: PrecisionSettings> BurnGraph<PS> {
                 Self {
                     #(#fields,)*
                     phantom: core::marker::PhantomData,
+                    device: burn::module::Ignored(device.clone()),
                 }
             }
         }
@@ -551,15 +551,19 @@ impl<PS: PrecisionSettings> BurnGraph<PS> {
 
         // Get the input and output types of the graph using passed in names
         input_names.iter().for_each(|input| {
-            self.graph_input_types
-                .push(inputs.get(input).unwrap().clone());
+            self.graph_input_types.push(
+                inputs
+                    .get(&TensorType::format_name(input))
+                    .unwrap_or_else(|| panic!("Input type not found for {input}"))
+                    .clone(),
+            );
         });
 
         output_names.iter().for_each(|output| {
             self.graph_output_types.push(
                 outputs
-                    .get(output)
-                    .unwrap_or_else(|| panic!("Output type is not found for {output}"))
+                    .get(&TensorType::format_name(output))
+                    .unwrap_or_else(|| panic!("Output type not found for {output}"))
                     .clone(),
             );
         });

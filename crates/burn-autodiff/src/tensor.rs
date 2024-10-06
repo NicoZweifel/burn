@@ -9,8 +9,8 @@ use crate::{
 use burn_tensor::backend::Backend;
 
 #[derive(Debug, Clone)]
-pub struct AutodiffTensor<B: Backend, const D: usize> {
-    pub primitive: B::FloatTensorPrimitive<D>,
+pub struct AutodiffTensor<B: Backend> {
+    pub primitive: B::FloatTensorPrimitive,
     pub node: NodeRef,
     pub rc: NodeRefCount,
 }
@@ -18,7 +18,7 @@ pub struct AutodiffTensor<B: Backend, const D: usize> {
 pub type NodeRefCount = Arc<NodeID>;
 
 #[derive(new, Debug)]
-struct RootStep {
+pub(crate) struct RootStep {
     node: NodeRef,
 }
 
@@ -35,14 +35,14 @@ impl Step for RootStep {
         self.node.parents.clone()
     }
 
-    fn order(&self) -> usize {
+    fn depth(&self) -> usize {
         self.node.order
     }
 }
 
-impl<B: Backend, const D: usize> AutodiffTensor<B, D> {
+impl<B: Backend> AutodiffTensor<B> {
     /// Create a new leaf tensor.
-    pub fn new(primitive: B::FloatTensorPrimitive<D>) -> Self {
+    pub fn new(primitive: B::FloatTensorPrimitive) -> Self {
         let id = NodeID::new();
         let node: NodeRef = Node::new(
             vec![],
@@ -57,7 +57,7 @@ impl<B: Backend, const D: usize> AutodiffTensor<B, D> {
         Self {
             rc: Arc::new(node.id),
             primitive,
-            node,
+            node: node.clone(),
         }
     }
 
@@ -95,7 +95,7 @@ impl<B: Backend, const D: usize> AutodiffTensor<B, D> {
 
     /// Create a tensor from parent infos.
     pub fn from_parents(
-        primitive: B::FloatTensorPrimitive<D>,
+        primitive: B::FloatTensorPrimitive,
         parent_nodes: &[NodeRef],
         requirement: Requirement,
         computing_properties: ComputingProperty,
@@ -113,7 +113,11 @@ impl<B: Backend, const D: usize> AutodiffTensor<B, D> {
             .unwrap_or_else(AutodiffClientImpl::new);
 
         let node: NodeRef = Node::new(
-            parent_nodes.iter().map(|node| node.id).collect(),
+            parent_nodes
+                .iter()
+                .filter_map(|node| node.clone_if_require_grad())
+                .map(|node| node.id)
+                .collect(),
             order,
             NodeID::new(),
             requirement,
@@ -147,7 +151,7 @@ impl<B: Backend, const D: usize> AutodiffTensor<B, D> {
         self
     }
 
-    pub fn into_primitive(self) -> B::FloatTensorPrimitive<D> {
+    pub fn into_primitive(self) -> B::FloatTensorPrimitive {
         self.primitive
     }
 }

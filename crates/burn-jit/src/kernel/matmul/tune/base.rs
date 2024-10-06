@@ -1,30 +1,27 @@
-use burn_compute::tune::{AutotuneOperation, AutotuneOperationSet};
 use burn_tensor::{Element, ElementConversion};
+use cubecl::tune::{local_tuner, AutotuneOperation, AutotuneOperationSet, LocalTuner};
 
 use crate::{
-    compute::JitAutotuneKey,
-    element::JitElement,
-    kernel::{
-        matmul::{utils::init_matmul_output, Tiling2dConfig},
-        prng::random_like_uniform,
-    },
+    element::FloatElement,
+    kernel::{matmul::utils::init_matmul_output, prng::random_like_uniform},
     ops::numeric::empty_device,
     tensor::JitTensor,
-    Runtime,
+    tune_key::JitAutotuneKey,
+    JitRuntime, JitTuneId,
 };
 
 use super::key::MatmulAutotuneKey;
 
 /// Set of matmul implementations available for autotune
 /// Autotune key is given by concatenating the closest upper power of 2 of m, k and n
-pub struct MatmulAutotuneOperationSet<R: Runtime, E: JitElement, const D: usize> {
+pub struct MatmulAutotuneOperationSet<R: JitRuntime, E: FloatElement> {
     key: JitAutotuneKey,
-    lhs: JitTensor<R, E, D>,
-    rhs: JitTensor<R, E, D>,
-    out: JitTensor<R, E, D>,
+    lhs: JitTensor<R, E>,
+    rhs: JitTensor<R, E>,
+    out: JitTensor<R, E>,
 }
-impl<R: Runtime, E: JitElement, const D: usize> MatmulAutotuneOperationSet<R, E, D> {
-    fn new(lhs: JitTensor<R, E, D>, rhs: JitTensor<R, E, D>, out: JitTensor<R, E, D>) -> Self {
+impl<R: JitRuntime, E: FloatElement> MatmulAutotuneOperationSet<R, E> {
+    fn new(lhs: JitTensor<R, E>, rhs: JitTensor<R, E>, out: JitTensor<R, E>) -> Self {
         Self {
             key: JitAutotuneKey::Matmul(MatmulAutotuneKey::new(&lhs.shape, &rhs.shape)),
             lhs,
@@ -34,8 +31,8 @@ impl<R: Runtime, E: JitElement, const D: usize> MatmulAutotuneOperationSet<R, E,
     }
 }
 
-impl<R: Runtime, E: JitElement + Element, const D: usize> AutotuneOperationSet<JitAutotuneKey>
-    for MatmulAutotuneOperationSet<R, E, D>
+impl<R: JitRuntime, E: FloatElement> AutotuneOperationSet<JitAutotuneKey>
+    for MatmulAutotuneOperationSet<R, E>
 {
     fn key(&self) -> JitAutotuneKey {
         self.key.clone()
@@ -59,22 +56,7 @@ impl<R: Runtime, E: JitElement + Element, const D: usize> AutotuneOperationSet<J
                 rhs.clone(),
                 out.clone(),
             )),
-            Box::new(Tiling2dMatmul::new(lhs.clone(), rhs.clone(), out.clone())),
-            Box::new(Tiling2dMatmulPadded::new(
-                lhs.clone(),
-                rhs.clone(),
-                out.clone(),
-            )),
-            Box::new(Tiling2dMatmulPaddedUnrolled::new(
-                lhs.clone(),
-                rhs.clone(),
-                out.clone(),
-            )),
-            Box::new(Tiling2dMatmulUnrolled::new(
-                lhs.clone(),
-                rhs.clone(),
-                out.clone(),
-            )),
+            Box::new(MatmulCube::new(lhs.clone(), rhs.clone(), out.clone())),
         ]
     }
 
@@ -82,29 +64,28 @@ impl<R: Runtime, E: JitElement + Element, const D: usize> AutotuneOperationSet<J
         match fastest_index {
             0 => Box::new(SimpleMatmul::new(self.lhs, self.rhs, self.out)),
             1 => Box::new(SimpleMatmul16x16::new(self.lhs, self.rhs, self.out)),
-            2 => Box::new(Tiling2dMatmul::new(self.lhs, self.rhs, self.out)),
-            3 => Box::new(Tiling2dMatmulPadded::new(self.lhs, self.rhs, self.out)),
-            4 => Box::new(Tiling2dMatmulPaddedUnrolled::new(
-                self.lhs, self.rhs, self.out,
-            )),
-            5 => Box::new(Tiling2dMatmulUnrolled::new(self.lhs, self.rhs, self.out)),
+            2 => Box::new(MatmulCube::new(self.lhs, self.rhs, self.out)),
             _ => panic!("Fastest index is out of bound"),
         }
     }
 }
 
 /// Executes autotune on matmul operations
-pub fn matmul_autotune<R: Runtime, E: JitElement + Element, const D: usize>(
-    lhs: JitTensor<R, E, D>,
-    rhs: JitTensor<R, E, D>,
-) -> JitTensor<R, E, D> {
+pub fn matmul_autotune<R: JitRuntime, E: FloatElement + Element>(
+    lhs: JitTensor<R, E>,
+    rhs: JitTensor<R, E>,
+) -> JitTensor<R, E> {
     let client = lhs.client.clone();
 
     let output = init_matmul_output(&lhs, &rhs);
 
-    let operation_set = Box::new(MatmulAutotuneOperationSet::new(lhs, rhs, output.clone()));
+    static TUNER: LocalTuner<JitAutotuneKey, JitTuneId> = local_tuner!();
 
-    client.autotune_execute(operation_set);
+    TUNER.execute(
+        &JitTuneId::new::<R>(&lhs.device),
+        &client,
+        Box::new(MatmulAutotuneOperationSet::new(lhs, rhs, output.clone())),
+    );
 
     output
 }
@@ -112,13 +93,13 @@ pub fn matmul_autotune<R: Runtime, E: JitElement + Element, const D: usize>(
 macro_rules! matmul_tune_ops {
     ($name:ident, $func:expr) => {
         #[derive(new)]
-        pub(crate) struct $name<R: Runtime, E: JitElement, const D: usize> {
-            lhs: JitTensor<R, E, D>,
-            rhs: JitTensor<R, E, D>,
-            out: JitTensor<R, E, D>,
+        pub(crate) struct $name<R: JitRuntime, E: FloatElement> {
+            lhs: JitTensor<R, E>,
+            rhs: JitTensor<R, E>,
+            out: JitTensor<R, E>,
         }
 
-        impl<R: Runtime, E: JitElement, const D: usize> AutotuneOperation for $name<R, E, D> {
+        impl<R: JitRuntime, E: FloatElement> AutotuneOperation for $name<R, E> {
             fn execute(self: Box<Self>) {
                 #[allow(clippy::redundant_closure_call)]
                 $func(self.lhs, self.rhs, self.out);
@@ -146,38 +127,15 @@ matmul_tune_ops!(SimpleMatmul16x16, |lhs, rhs, out| {
     crate::kernel::matmul::matmul_simple(lhs, rhs, out, 16, 16)
 });
 
-// Probably the fastest when fixed size, without loop unrolling
-matmul_tune_ops!(Tiling2dMatmulPadded, |lhs, rhs, out| {
-    crate::kernel::matmul::matmul_tiling_2d_padded(lhs, rhs, out, Tiling2dConfig::default())
-});
-
-// Probably the fastest when fixed sizes, with loop unrolling
-matmul_tune_ops!(Tiling2dMatmulPaddedUnrolled, |lhs, rhs, out| {
-    crate::kernel::matmul::matmul_tiling_2d_padded(
-        lhs,
-        rhs,
-        out,
-        Tiling2dConfig {
-            unroll: true,
-            ..Default::default()
-        },
-    )
-});
-
 // Probably the fastest in the general case, without loop unrolling
-matmul_tune_ops!(Tiling2dMatmul, |lhs, rhs, out| {
-    crate::kernel::matmul::matmul_tiling_2d(lhs, rhs, out, Tiling2dConfig::default())
-});
-
-// Probably the fastest in the general case, with loop unrolling
-matmul_tune_ops!(Tiling2dMatmulUnrolled, |lhs, rhs, out| {
-    crate::kernel::matmul::matmul_tiling_2d_padded(
-        lhs,
-        rhs,
-        out,
-        Tiling2dConfig {
-            unroll: true,
-            ..Default::default()
-        },
-    )
-});
+matmul_tune_ops!(
+    MatmulCube,
+    |lhs: JitTensor<R, E>, rhs: JitTensor<R, E>, out: JitTensor<R, E>| {
+        cubecl::linalg::matmul::launch_ref::<R, E>(
+            &lhs.client,
+            lhs.as_handle_ref(),
+            rhs.as_handle_ref(),
+            out.as_handle_ref(),
+        );
+    }
+);

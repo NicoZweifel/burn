@@ -2,7 +2,7 @@
 mod tests {
     use super::*;
     use burn_tensor::module::adaptive_avg_pool1d;
-    use burn_tensor::{Data, Shape, Tensor};
+    use burn_tensor::{Shape, Tensor};
 
     #[test]
     fn test_avg_pool1d_simple() {
@@ -35,9 +35,8 @@ mod tests {
             let device = Default::default();
             let x = TestAutodiffTensor::from_data(
                 TestTensorInt::arange(0..shape_x.num_elements() as i64, &device)
-                    .reshape(shape_x)
-                    .into_data()
-                    .convert(),
+                    .reshape::<3, _>(shape_x)
+                    .into_data(),
                 &device,
             )
             .require_grad();

@@ -1,32 +1,43 @@
-use super::unary;
-use crate::{
-    codegen::dialect::gpu::{ClampOperator, Operator, Scope},
-    element::JitElement,
-    tensor::JitTensor,
-    unary, Runtime,
-};
+use cubecl::prelude::*;
 
-pub(crate) fn clamp<R: Runtime, E: JitElement, const D: usize>(
-    input: JitTensor<R, E, D>,
+use crate::kernel::{launch_unary, UnaryOp};
+use crate::{element::JitElement, tensor::JitTensor, JitRuntime};
+
+#[derive(CubeLaunch)]
+struct Options<C: Numeric> {
+    min_value: C,
+    max_value: C,
+}
+
+pub(crate) fn clamp<R: JitRuntime, E: JitElement>(
+    input: JitTensor<R, E>,
     min_value: E,
     max_value: E,
-) -> JitTensor<R, E, D> {
-    unary!(
-        operation: |scope: &mut Scope, elem| Operator::Clamp(ClampOperator {
-            input: scope.read_array(0, elem),
-            min_value: scope.read_scalar(0, elem),
-            max_value: scope.read_scalar(1, elem),
-            out: scope.create_local(elem),
-        }),
-        compiler: R::Compiler,
-        scalar 2
-    );
+) -> JitTensor<R, E> {
+    struct ClampOp;
 
-    unary::<Ops<R::Compiler, E>, OpsInplace<R::Compiler, E>, R, E, D>(
-        input,
-        Some(&[min_value, max_value]),
-        true,
-        Ops::new(),
-        OpsInplace::new(),
-    )
+    impl<C: Numeric> UnaryOp<C> for ClampOp {
+        type Options = Options<C>;
+
+        fn __expand_execute(
+            context: &mut CubeContext,
+            input: <Line<C> as CubeType>::ExpandType,
+            options: OptionsExpand<C>,
+        ) -> <Line<C> as CubeType>::ExpandType {
+            #[cube]
+            fn execute<C: Numeric>(input: Line<C>, options: &Options<C>) -> Line<C> {
+                Line::clamp(
+                    input,
+                    Line::new(options.min_value),
+                    Line::new(options.max_value),
+                )
+            }
+
+            execute::expand(context, input, options)
+        }
+    }
+
+    launch_unary::<R, E, ClampOp, _>(input, |_| {
+        OptionsLaunch::new(ScalarArg::new(min_value), ScalarArg::new(max_value))
+    })
 }

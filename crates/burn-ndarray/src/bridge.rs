@@ -1,4 +1,4 @@
-use crate::{FloatNdArrayElement, NdArray, NdArrayDevice, NdArrayTensor};
+use crate::{element::QuantElement, FloatNdArrayElement, NdArray, NdArrayDevice, NdArrayTensor};
 use burn_tensor::{backend::BackendBridge, ops::FloatTensor};
 use core::marker::PhantomData;
 
@@ -8,26 +8,27 @@ pub struct PrecisionBridge<E: FloatNdArrayElement> {
     _e: PhantomData<E>,
 }
 
-impl<TElem, OElem> BackendBridge<NdArray<OElem>> for PrecisionBridge<TElem>
+impl<TElem, OElem, QElem> BackendBridge<NdArray<OElem, QElem>> for PrecisionBridge<TElem>
 where
     TElem: FloatNdArrayElement,
     OElem: FloatNdArrayElement,
+    QElem: QuantElement,
 {
     type Target = NdArray<TElem>;
 
-    fn into_target<const D: usize>(
-        tensor: FloatTensor<NdArray<OElem>, D>,
+    fn into_target(
+        tensor: FloatTensor<NdArray<OElem>>,
         _device: Option<NdArrayDevice>,
-    ) -> FloatTensor<Self::Target, D> {
+    ) -> FloatTensor<Self::Target> {
         let array = tensor.array.mapv(|a| a.elem()).into_shared();
 
         NdArrayTensor::new(array)
     }
 
-    fn from_target<const D: usize>(
-        tensor: FloatTensor<Self::Target, D>,
+    fn from_target(
+        tensor: FloatTensor<Self::Target>,
         _device: Option<NdArrayDevice>,
-    ) -> FloatTensor<NdArray<OElem>, D> {
+    ) -> FloatTensor<NdArray<OElem>> {
         let array = tensor.array.mapv(|a| a.elem()).into_shared();
 
         NdArrayTensor::new(array)

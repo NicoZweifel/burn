@@ -1,4 +1,5 @@
-use crate::stream::{store::ExecutionPlanId, OperationDescription};
+use crate::stream::store::ExecutionPlanId;
+use burn_tensor::repr::OperationDescription;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
@@ -16,6 +17,10 @@ pub struct ExecutionPlanIndex {
     /// We rely instead on [`PartialEq`](core::cmp::PartialEq) to manually handle hash collisions.
     /// This is OK because we use `relative` operations where any scalar values are set to zeros,
     /// see [`RelativeStreamConverter`](crate::stream::RelativeStreamConverter).
+    ///
+    /// Map from the hash of the `OperationDescription` to a list of `(OperationDescription, index)` pairs,
+    /// where `index` is the index of all the execution plans that start with the `OperationDescription`
+    /// in the `starters` list.
     mapping: HashMap<u64, Vec<(OperationDescription, usize)>>,
     starters: Vec<Vec<ExecutionPlanId>>,
 }
@@ -50,6 +55,7 @@ impl ExecutionPlanIndex {
         }
     }
 
+    /// Find execution plans starting with the `OperationDescription`
     fn find_starting_with(&self, operation: &OperationDescription) -> Vec<ExecutionPlanId> {
         let key = self.operation_key(operation);
         let values = match self.mapping.get(&key) {
@@ -74,6 +80,7 @@ impl ExecutionPlanIndex {
         val
     }
 
+    /// Update the index for an execution plan starting with operation `ops`
     fn insert_new_operation(&mut self, ops: &OperationDescription, new_id: ExecutionPlanId) {
         let key = self.operation_key(ops);
         let values = match self.mapping.get_mut(&key) {
@@ -115,13 +122,15 @@ impl ExecutionPlanIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        stream::{
+    use burn_tensor::{
+        repr::{
             BinaryOperationDescription, NumericOperationDescription, ScalarOperationDescription,
+            TensorDescription, TensorId, TensorStatus,
         },
-        TensorDescription, TensorId, TensorStatus,
+        DType,
     };
+
+    use super::*;
 
     #[test]
     fn should_find_optimization_id_based_on_tensor_ops() {
@@ -215,64 +224,75 @@ mod tests {
     }
 
     fn ops_1() -> OperationDescription {
-        OperationDescription::NumericFloat(NumericOperationDescription::Add(
-            BinaryOperationDescription {
+        OperationDescription::NumericFloat(
+            DType::F32,
+            NumericOperationDescription::Add(BinaryOperationDescription {
                 lhs: TensorDescription {
                     id: TensorId::new(0),
                     shape: vec![32, 32],
                     status: TensorStatus::ReadOnly,
+                    dtype: DType::F32,
                 },
                 rhs: TensorDescription {
                     id: TensorId::new(1),
                     shape: vec![32, 32],
                     status: TensorStatus::ReadOnly,
+                    dtype: DType::F32,
                 },
                 out: TensorDescription {
                     id: TensorId::new(2),
                     shape: vec![32, 32],
                     status: TensorStatus::NotInit,
+                    dtype: DType::F32,
                 },
-            },
-        ))
+            }),
+        )
     }
 
     fn ops_2() -> OperationDescription {
-        OperationDescription::NumericFloat(NumericOperationDescription::AddScalar(
-            ScalarOperationDescription {
+        OperationDescription::NumericFloat(
+            DType::F32,
+            NumericOperationDescription::AddScalar(ScalarOperationDescription {
                 lhs: TensorDescription {
                     id: TensorId::new(0),
                     shape: vec![32, 32],
                     status: TensorStatus::ReadOnly,
+                    dtype: DType::F32,
                 },
                 rhs: 5.0,
                 out: TensorDescription {
                     id: TensorId::new(2),
                     shape: vec![32, 32],
                     status: TensorStatus::NotInit,
+                    dtype: DType::F32,
                 },
-            },
-        ))
+            }),
+        )
     }
 
     fn ops_3() -> OperationDescription {
-        OperationDescription::NumericFloat(NumericOperationDescription::Sub(
-            BinaryOperationDescription {
+        OperationDescription::NumericFloat(
+            DType::F32,
+            NumericOperationDescription::Sub(BinaryOperationDescription {
                 lhs: TensorDescription {
                     id: TensorId::new(0),
                     shape: vec![32, 32],
                     status: TensorStatus::ReadOnly,
+                    dtype: DType::F32,
                 },
                 rhs: TensorDescription {
                     id: TensorId::new(1),
                     shape: vec![32, 32],
                     status: TensorStatus::ReadOnly,
+                    dtype: DType::F32,
                 },
                 out: TensorDescription {
                     id: TensorId::new(2),
                     shape: vec![32, 32],
                     status: TensorStatus::NotInit,
+                    dtype: DType::F32,
                 },
-            },
-        ))
+            }),
+        )
     }
 }

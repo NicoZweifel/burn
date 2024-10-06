@@ -1,11 +1,11 @@
-use super::ParamId;
+use super::{ParamId, Quantizer};
 use crate::{
     record::Record,
     tensor::backend::{AutodiffBackend, Backend},
 };
 use alloc::vec::Vec;
 pub use burn_derive::Module;
-use burn_tensor::{Bool, Int, Tensor};
+use burn_tensor::{quantization::Calibration, Bool, Int, Tensor};
 
 /// Type alias to `Vec<B::Device>` which supports `no_std` environments, but automatically using
 /// the `alloc` crate.
@@ -19,7 +19,7 @@ macro_rules! module {
         impl<B: Backend> ModuleMapper<B> for Mapper {
             fn map_float<const D: usize>(
                 &mut self,
-                _id: &ParamId,
+                _id: ParamId,
                 tensor: Tensor<B, D>,
             ) -> Tensor<B, D> {
                 let func = $item;
@@ -35,7 +35,7 @@ macro_rules! module {
             backend: core::marker::PhantomData<B>,
         }
         impl<'a, B: Backend> ModuleVisitor<B> for Visitor<'a, B> {
-            fn visit_float<const D: usize>(&mut self, _id: &ParamId, tensor: &Tensor<B, D>) {
+            fn visit_float<const D: usize>(&mut self, _id: ParamId, tensor: &Tensor<B, D>) {
                 let func = $item;
                 func(tensor, &mut self.state)
             }
@@ -97,17 +97,18 @@ pub trait Module<B: Backend>: Clone + Send + core::fmt::Debug {
     ///
     /// # Notes
     ///
-    /// This is similar to [to_device](Module::to_device), but it ensures the module will
-    /// have its own autodiff graph.
+    /// This is similar to [to_device](Module::to_device), but it ensures the output module on the
+    /// new device will have its own autodiff graph.
     fn fork(self, device: &B::Device) -> Self;
 
     /// Move the module and all of its sub-modules to the given device.
     ///
     /// # Warnings
     ///
-    /// The device operations will be registered in the autodiff graph. Therefore, be sure to call
-    /// backward only one time even if you have the same module on multiple devices. If you want to
-    /// call backward multiple times, look into using [fork](Module::fork) instead.
+    /// The operation supports autodiff and it will be registered when activated. However, this may
+    /// not be what you want. The output model will be an intermediary model, meaning that you
+    /// can't optimize it with gradient descent. If you want to optimize the output network on the
+    /// target device, use [fork](Module::fork) instead.
     fn to_device(self, device: &B::Device) -> Self;
 
     /// Each tensor in the module tree will not require grad.
@@ -201,28 +202,33 @@ pub trait Module<B: Backend>: Clone + Send + core::fmt::Debug {
 
         Ok(self.load_record(record))
     }
+
+    /// Quantize the weights of the module.
+    fn quantize_weights<C: Calibration>(self, quantizer: &mut Quantizer<C>) -> Self {
+        self.map(quantizer)
+    }
 }
 
 /// Module visitor trait.
 pub trait ModuleVisitor<B: Backend> {
     /// Visit a float tensor in the module.
-    fn visit_float<const D: usize>(&mut self, _id: &ParamId, _tensor: &Tensor<B, D>) {}
+    fn visit_float<const D: usize>(&mut self, _id: ParamId, _tensor: &Tensor<B, D>) {}
     /// Visit an int tensor in the module.
-    fn visit_int<const D: usize>(&mut self, _id: &ParamId, _tensor: &Tensor<B, D, Int>) {}
+    fn visit_int<const D: usize>(&mut self, _id: ParamId, _tensor: &Tensor<B, D, Int>) {}
     /// Visit a bool tensor in the module.
-    fn visit_bool<const D: usize>(&mut self, _id: &ParamId, _tensor: &Tensor<B, D, Bool>) {}
+    fn visit_bool<const D: usize>(&mut self, _id: ParamId, _tensor: &Tensor<B, D, Bool>) {}
 }
 
 /// Module mapper trait.
 pub trait ModuleMapper<B: Backend> {
     /// Map a float tensor in the module.
-    fn map_float<const D: usize>(&mut self, _id: &ParamId, tensor: Tensor<B, D>) -> Tensor<B, D> {
+    fn map_float<const D: usize>(&mut self, _id: ParamId, tensor: Tensor<B, D>) -> Tensor<B, D> {
         tensor
     }
     /// Map an int tensor in the module.
     fn map_int<const D: usize>(
         &mut self,
-        _id: &ParamId,
+        _id: ParamId,
         tensor: Tensor<B, D, Int>,
     ) -> Tensor<B, D, Int> {
         tensor
@@ -230,7 +236,7 @@ pub trait ModuleMapper<B: Backend> {
     /// Map a bool tensor in the module.
     fn map_bool<const D: usize>(
         &mut self,
-        _id: &ParamId,
+        _id: ParamId,
         tensor: Tensor<B, D, Bool>,
     ) -> Tensor<B, D, Bool> {
         tensor
